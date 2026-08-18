@@ -59,28 +59,8 @@ function cleanTitle(title) {
         .trim();
 }
 
-// Kiểm tra xem kết quả tìm kiếm có thực sự khớp với bài hát không (Tránh lấy nhầm ảnh bài khác)
-function isMatchingResult(queryTitle, queryArtist, resultTitle) {
-    if (!resultTitle) return false;
-    const qTitle = cleanTitle(queryTitle).toLowerCase();
-    const rTitle = resultTitle.toLowerCase();
-
-    // Nếu tên bài hát nằm trong tiêu đề video
-    if (qTitle.length >= 2 && rTitle.includes(qTitle)) {
-        return true;
-    }
-
-    const qArtist = getPrimaryArtist(queryArtist).toLowerCase();
-    if (qArtist.length >= 2 && rTitle.includes(qArtist)) {
-        return true;
-    }
-
-    return false;
-}
-
-// Tra cứu Video ID chính xác (Có cơ chế kiểm duyệt tiêu đề nghiêm ngặt)
+// Tra cứu Video ID từ YouTube
 async function resolveYouTubeId(title, artist, fallbackTrack) {
-    // 1. Nếu từ YouTube / YouTube Music: Lấy trực tiếp Video ID (Chính xác 100%)
     if (fallbackTrack && fallbackTrack.videoId && typeof fallbackTrack.videoId === 'string' && fallbackTrack.videoId.length >= 5) {
         return fallbackTrack.videoId;
     }
@@ -102,7 +82,6 @@ async function resolveYouTubeId(title, artist, fallbackTrack) {
         return youtubeIdCache.get(cacheKey);
     }
 
-    // 2. Tra cứu trên YouTube với bộ lọc đối chiếu tiêu đề
     try {
         const url = 'https://www.youtube.com/results?search_query=' + encodeURIComponent(query);
         const res = await axios.get(url, {
@@ -110,20 +89,11 @@ async function resolveYouTubeId(title, artist, fallbackTrack) {
             timeout: 3500
         });
 
-        // Trích xuất videoId và title của video tìm được
-        const videoMatch = res.data.match(/"videoId":"([^"]+)".*?"title":{"runs":\[{"text":"([^"]+)"/);
-        if (videoMatch && videoMatch[1] && videoMatch[2]) {
-            const foundId = videoMatch[1];
-            const foundTitle = videoMatch[2];
-
-            // ⚠️ CHỈ CHẤP NHẬN NẾU TIÊU ĐỀ THỰC SỰ KHỚP VỚI BÀI HÁT
-            if (isMatchingResult(cleanedTitle, primaryArtist, foundTitle)) {
-                youtubeIdCache.set(cacheKey, foundId);
-                console.log(`🎬 Đã khớp chính xác Video ID cho "${query}": ${foundId} (${foundTitle})`);
-                return foundId;
-            } else {
-                console.log(`⚠️ Từ chối kết quả tìm kiếm không liên quan: "${foundTitle}" (Tìm kiếm: "${query}")`);
-            }
+        const match = res.data.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+        if (match && match[1]) {
+            youtubeIdCache.set(cacheKey, match[1]);
+            console.log(`🎬 Đã tra cứu Video ID cho "${query}": ${match[1]}`);
+            return match[1];
         }
     } catch (e) {}
 
@@ -334,26 +304,42 @@ async function handleTrackData(data) {
         lastTrackId = trackId;
         lastPresenceKey = '';
         console.log(`\n🎵 BÀI HÁT: "${data.title}" (${cleanArtist(data.artist)}) trên ${data.platform || 'Web'}`);
-        
-        // 1. Tìm Video ID chuẩn với cơ chế đối chiếu tiêu đề nghiêm ngặt
-        // 2. Tìm lời bài hát
-        const [lyrics, ytVideoId] = await Promise.all([
-            fetchLyrics(data.title, data.artist),
-            resolveYouTubeId(data.title, data.artist, data)
-        ]);
 
-        currentLyrics = lyrics;
-
-        if (ytVideoId) {
-            currentImageKey = `youtube:${ytVideoId}`;
+        // ⚡ GÁN NGAY ẢNH BÌA ĐỒNG BỘ 0ms (Không bị độ trễ chờ đợi)
+        if (data.videoId && typeof data.videoId === 'string' && data.videoId.length >= 5) {
+            currentImageKey = `youtube:${data.videoId}`;
         } else if (data.artwork && data.artwork.includes('scdn.co/image/')) {
             const spotId = data.artwork.split('scdn.co/image/')[1].split('?')[0];
             currentImageKey = `spotify:${spotId}`;
+        } else if (data.artwork && data.artwork.includes('/vi/')) {
+            const viMatch = data.artwork.match(/\/vi\/([^\/]+)\//);
+            if (viMatch) currentImageKey = `youtube:${viMatch[1]}`;
+        } else if (data.url && (data.url.includes('v=') || data.url.includes('youtu.be/'))) {
+            const m = data.url.match(/[?&]v=([^&#]+)/) || data.url.match(/youtu\.be\/([^&#]+)/);
+            if (m) currentImageKey = `youtube:${m[1]}`;
         } else {
             currentImageKey = null;
         }
 
+        // Cập nhật trạng thái tức thì ngay khung hình đầu tiên
         updatePresence(true);
+
+        // Tra cứu ngầm Lời bài hát
+        fetchLyrics(data.title, data.artist).then(lyrics => {
+            currentLyrics = lyrics;
+            updatePresence(true);
+        });
+
+        // Nếu chưa có ảnh (ví dụ nghe SoundCloud), tra cứu ngầm videoId
+        if (!currentImageKey) {
+            resolveYouTubeId(data.title, data.artist, data).then(foundId => {
+                if (foundId) {
+                    currentImageKey = `youtube:${foundId}`;
+                    updatePresence(true);
+                }
+            });
+        }
+
     } else {
         updatePresence(false);
     }
