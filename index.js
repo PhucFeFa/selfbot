@@ -49,23 +49,28 @@ function cleanTitle(title) {
         .trim();
 }
 
-// Chuyển đổi định dạng ảnh phù hợp cho Discord
+// Chuyển đổi định dạng ảnh phù hợp cho Discord (ưu tiên ảnh vuông không viền đen)
 function formatDiscordImage(track) {
     if (!track) return null;
-    
-    // 1. YouTube: dùng native youtube:VIDEO_ID (ảnh nét căng chuẩn HD)
+
+    // 1. Nếu có ảnh bìa vuông từ Spotify / Apple Music / Google / SoundCloud: dùng trực tiếp qua proxy mp:
+    if (track.artwork && typeof track.artwork === 'string') {
+        if (track.artwork.includes('scdn.co/image/')) {
+            const spotId = track.artwork.split('scdn.co/image/')[1];
+            if (spotId) return `spotify:${spotId}`;
+        }
+        if (track.artwork.includes('googleusercontent.com') || track.artwork.includes('sndcdn.com') || track.artwork.includes('mzstatic.com')) {
+            return `mp:${track.artwork}`;
+        }
+    }
+
+    // 2. Nếu là YouTube: dùng native youtube:VIDEO_ID
     if (track.videoId) {
         return `youtube:${track.videoId}`;
     }
     if (track.url) {
         const ytMatch = track.url.match(/[?&]v=([^&]+)/) || track.url.match(/youtu\.be\/([^?&]+)/);
         if (ytMatch) return `youtube:${ytMatch[1]}`;
-    }
-
-    // 2. Spotify: dùng native spotify:IMAGE_ID
-    if (track.artwork && track.artwork.includes('scdn.co/image/')) {
-        const spotId = track.artwork.split('scdn.co/image/')[1];
-        if (spotId) return `spotify:${spotId}`;
     }
 
     // 3. Fallback khác
@@ -124,7 +129,7 @@ async function fetchLyrics(title, artist) {
         let res = await axios.get('https://lrclib.net/api/get', {
             params: {
                 track_name: cleanedTitle,
-                artist_name: cleanedArt || undefined
+                artist_name: (artist && !artist.toLowerCase().includes('topic') && !artist.toLowerCase().includes('music')) ? artist : undefined
             },
             timeout: 5000
         });
@@ -174,7 +179,6 @@ async function updatePresence(force = false) {
             // --- CHẾ ĐỘ PHÁT NHẠC ---
             const track = currentTrack;
             
-            // Tính toán thời gian thực tế khớp chuẩn từng mili-giây + Bù 350ms
             const elapsedSincePing = (Date.now() - lastMusicUpdate) / 1000;
             const liveCurrentTime = Math.min(track.duration || 9999, (track.currentTime || 0) + elapsedSincePing);
             const effectiveTime = liveCurrentTime + 0.35;
@@ -200,7 +204,6 @@ async function updatePresence(force = false) {
             const songName = cleanTitle(track.title) || 'Unknown Song';
             const artistName = cleanArtist(track.artist) || 'Artist';
 
-            // Nếu đang hát: Hiện lời bài hát. Nếu đang dạo nhạc: Chỉ hiện nghệ sĩ sạch (không có chữ Topic)
             const detailsText = `🎵 ${songName}`.substring(0, 127);
             const stateText = activeLyric ? `🎤 ${activeLyric}`.substring(0, 127) : `🎧 ${artistName}`.substring(0, 127);
 
