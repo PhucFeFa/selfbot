@@ -16,12 +16,37 @@ let currentTrack = null;
 let currentLyrics = [];
 let lastTrackId = '';
 let lastMusicUpdate = 0;
+let lastRenderedLyric = '';
 const lyricsCache = new Map();
 
-function formatDiscordImage(url) {
-    if (!url) return null;
-    if (url.startsWith('mp:') || url.startsWith('youtube:') || url.startsWith('spotify:')) return url;
-    return `mp:${url}`;
+// Chuyển đổi định dạng ảnh phù hợp cho Discord
+function formatDiscordImage(track) {
+    if (!track) return null;
+    
+    // 1. Nếu là YouTube: dùng chuẩn native youtube:VIDEO_ID (Discord tự render ảnh bìa HD không bao giờ lỗi)
+    if (track.videoId) {
+        return `youtube:${track.videoId}`;
+    }
+    if (track.url) {
+        const ytMatch = track.url.match(/[?&]v=([^&]+)/) || track.url.match(/youtu\.be\/([^?&]+)/);
+        if (ytMatch) return `youtube:${ytMatch[1]}`;
+    }
+
+    // 2. Nếu là Spotify: dùng chuẩn native spotify:IMAGE_ID
+    if (track.artwork && track.artwork.includes('scdn.co/image/')) {
+        const spotId = track.artwork.split('scdn.co/image/')[1];
+        if (spotId) return `spotify:${spotId}`;
+    }
+
+    // 3. Fallback cho các link ảnh khác
+    if (track.artwork) {
+        if (track.artwork.startsWith('mp:') || track.artwork.startsWith('youtube:') || track.artwork.startsWith('spotify:')) {
+            return track.artwork;
+        }
+        return `mp:${track.artwork}`;
+    }
+
+    return null;
 }
 
 // Làm sạch tên bài hát
@@ -85,7 +110,7 @@ async function fetchLyrics(title, artist) {
         let res = await axios.get('https://lrclib.net/api/get', {
             params: {
                 track_name: cleanedTitle,
-                artist_name: artist || undefined
+                artist_name: (artist && !artist.toLowerCase().includes('topic')) ? artist : undefined
             },
             timeout: 5000
         });
@@ -134,12 +159,24 @@ async function updatePresence() {
         if (isMusicActive) {
             // --- CHẾ ĐỘ PHÁT NHẠC ---
             const track = currentTrack;
-            const currentTime = track.currentTime || 0;
+            
+            // Tính toán thời gian thực tế khớp chuẩn từng mili-giây
+            const elapsedSincePing = (Date.now() - lastMusicUpdate) / 1000;
+            const liveCurrentTime = Math.min(track.duration || 9999, (track.currentTime || 0) + elapsedSincePing);
             const duration = track.duration || 0;
 
             let currentLyricLine = '';
             if (currentLyrics && currentLyrics.length > 0) {
-                const activeLine = currentLyrics.filter(l => l.timeSec <= currentTime).pop();
+                // Lọc câu hát gần nhất với liveCurrentTime
+                let activeLine = null;
+                for (let i = 0; i < currentLyrics.length; i++) {
+                    if (currentLyrics[i].timeSec <= liveCurrentTime) {
+                        activeLine = currentLyrics[i];
+                    } else {
+                        break;
+                    }
+                }
+
                 if (activeLine) {
                     currentLyricLine = activeLine.text;
                 } else {
@@ -158,14 +195,15 @@ async function updatePresence() {
                 .setDetails(`🎵 ${songName}`.substring(0, 127))
                 .setState(currentLyricLine ? `🎤 ${currentLyricLine}`.substring(0, 127) : `👤 ${artistName}`.substring(0, 127));
 
-            if (track.artwork && (track.artwork.startsWith('http://') || track.artwork.startsWith('https://') || track.artwork.startsWith('mp:'))) {
-                presence.setAssetsLargeImage(formatDiscordImage(track.artwork));
+            const imageKey = formatDiscordImage(track);
+            if (imageKey) {
+                presence.setAssetsLargeImage(imageKey);
                 presence.setAssetsLargeText(`${songName} - ${artistName}`.substring(0, 127));
             }
 
-            if (duration > 0 && currentTime >= 0) {
-                presence.setStartTimestamp(Math.floor(Date.now() - currentTime * 1000));
-                presence.setEndTimestamp(Math.floor(Date.now() + (duration - currentTime) * 1000));
+            if (duration > 0 && liveCurrentTime >= 0) {
+                presence.setStartTimestamp(Math.floor(Date.now() - liveCurrentTime * 1000));
+                presence.setEndTimestamp(Math.floor(Date.now() + (duration - liveCurrentTime) * 1000));
             }
 
             if (track.url && (track.url.startsWith('http://') || track.url.startsWith('https://'))) {
@@ -175,8 +213,14 @@ async function updatePresence() {
 
             await client.user.setActivity(presence);
 
+            if (currentLyricLine && currentLyricLine !== lastRenderedLyric) {
+                lastRenderedLyric = currentLyricLine;
+                console.log(`[${Math.floor(liveCurrentTime)}s] 🎤 ${currentLyricLine}`);
+            }
+
         } else {
             // --- CHẾ ĐỘ MẶC ĐỊNH (Không nghe nhạc) ---
+            lastRenderedLyric = '';
             const presence = new RichPresence(client)
                 .setApplicationId(CLIENT_ID)
                 .setType('PLAYING')
@@ -210,6 +254,7 @@ app.post('/track', async (req, res) => {
     const trackId = `${data.title} - ${data.artist}`;
     if (trackId !== lastTrackId) {
         lastTrackId = trackId;
+        lastRenderedLyric = '';
         console.log(`\n🎵 BÀI HÁT MỚI: "${data.title}" (${data.artist || 'Unknown'}) trên ${data.platform || 'Web'}`);
         currentLyrics = await fetchLyrics(data.title, data.artist);
     }
@@ -238,10 +283,10 @@ client.on('ready', async () => {
 
     updatePresence();
 
-    // Duy trì kiểm tra cập nhật mỗi 1.5 giây để lời bài hát nhảy theo từng giây
+    // Đồng bộ mỗi 1.0 giây để bám sát lời bài hát từng tích tắc
     setInterval(() => {
         updatePresence();
-    }, 1500);
+    }, 1000);
 });
 
 const token = process.env.DISCORD_TOKEN;
