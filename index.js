@@ -20,9 +20,11 @@ let lastMusicUpdate = 0;
 let lastPresenceKey = '';
 let lastSetActivityTime = 0;
 
+let storageChannel = null;
 const lyricsCache = new Map();
+const cdnImageCache = new Map();
 
-// Làm sạch tên ca sĩ (loại bỏ - Topic, VEVO, Official...)
+// Làm sạch tên ca sĩ
 function cleanArtist(artist) {
     if (!artist) return '';
     return artist
@@ -58,29 +60,78 @@ function cleanTitle(title) {
         .trim();
 }
 
-// LẤY CHÍNH XÁC ẢNH BÌA TỪ NGUỒN PHÁT (TUYỆT ĐỐI KHÔNG TÌM KIẾM BỪA TRÊN YOUTUBE ĐỂ TRÁNH LẤY NHẦM ẢNH)
-function getExactArtworkKey(track) {
-    if (!track) return null;
+// Tìm hoặc tạo kênh lưu trữ ảnh cá nhân bảo mật
+async function initStorageChannel(discordClient) {
+    try {
+        const ownedGuild = discordClient.guilds.cache.find(g => g.ownerId === discordClient.user.id);
+        if (!ownedGuild) return null;
 
-    // 1. YouTube & YouTube Music: Dùng chính xác Video ID đang phát trong tab
-    if (track.videoId && typeof track.videoId === 'string' && track.videoId.length >= 5) {
-        return `youtube:${track.videoId}`;
+        let channel = ownedGuild.channels.cache.find(c => c.name === 'bot-storage');
+        if (!channel) {
+            channel = await ownedGuild.channels.create('bot-storage', {
+                type: 'GUILD_TEXT',
+                topic: 'Private storage for music album covers',
+                permissionOverwrites: [
+                    {
+                        id: ownedGuild.roles.everyone.id,
+                        deny: ['VIEW_CHANNEL']
+                    },
+                    {
+                        id: discordClient.user.id,
+                        allow: ['VIEW_CHANNEL', 'SEND_MESSAGES', 'ATTACH_FILES']
+                    }
+                ]
+            });
+            console.log('📁 Đã tạo kênh lưu trữ ảnh bìa bảo mật:', channel.id);
+        }
+        storageChannel = channel;
+        return channel;
+    } catch (e) {
+        console.error('⚠️ Không thể khởi tạo storage channel:', e.message);
+        return null;
     }
-    if (track.url) {
-        const ytMatch = track.url.match(/[?&]v=([^&#]+)/) || track.url.match(/youtu\.be\/([^&#]+)/);
-        if (ytMatch) return `youtube:${ytMatch[1]}`;
-    }
-    if (track.artwork && track.artwork.includes('/vi/')) {
-        const viMatch = track.artwork.match(/\/vi\/([^\/]+)\//);
-        if (viMatch) return `youtube:${viMatch[1]}`;
+}
+
+// Chuyển đổi ảnh từ SoundCloud/Apple Music sang Discord CDN để hiển thị 100% không lỗi
+async function uploadToDiscordCDN(imageUrl) {
+    if (!imageUrl || (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://'))) {
+        return null;
     }
 
-    // 2. Spotify: Dùng chính xác Image ID từ Spotify CDN
-    if (track.artwork && track.artwork.includes('scdn.co/image/')) {
-        const spotId = track.artwork.split('scdn.co/image/')[1].split('?')[0];
-        if (spotId) return `spotify:${spotId}`;
+    if (cdnImageCache.has(imageUrl)) {
+        return cdnImageCache.get(imageUrl);
     }
 
+    if (!storageChannel) {
+        return null;
+    }
+
+    try {
+        console.log(`🖼️ Đang nạp và tối ưu ảnh bìa gốc: ${imageUrl}`);
+        const response = await axios.get(imageUrl, {
+            responseType: 'arraybuffer',
+            timeout: 5000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        });
+
+        const msg = await storageChannel.send({
+            files: [{
+                attachment: response.data,
+                name: 'cover.jpg'
+            }]
+        });
+
+        const cdnUrl = msg.attachments.first()?.url;
+        if (cdnUrl) {
+            cdnImageCache.set(imageUrl, cdnUrl);
+            console.log(`✨ Đã nạp thành công ảnh bìa chuẩn Discord: ${cdnUrl}`);
+            return cdnUrl;
+        }
+    } catch (err) {
+        console.error('❌ Lỗi uploadToDiscordCDN:', err.message);
+    }
     return null;
 }
 
@@ -290,17 +341,40 @@ async function handleTrackData(data) {
         lastPresenceKey = '';
         console.log(`\n🎵 BÀI HÁT: "${data.title}" (${cleanArtist(data.artist)}) trên ${data.platform || 'Web'}`);
 
-        // 1. Lấy CHÍNH XÁC ảnh bìa từ nguồn phát (Không đoán mò trên YouTube)
-        currentImageKey = getExactArtworkKey(data);
+        // 1. Gán ảnh trực tiếp từ YouTube / Spotify
+        if (data.videoId && typeof data.videoId === 'string' && data.videoId.length >= 5) {
+            currentImageKey = `youtube:${data.videoId}`;
+        } else if (data.artwork && data.artwork.includes('scdn.co/image/')) {
+            const spotId = data.artwork.split('scdn.co/image/')[1].split('?')[0];
+            currentImageKey = `spotify:${spotId}`;
+        } else if (data.artwork && data.artwork.includes('/vi/')) {
+            const viMatch = data.artwork.match(/\/vi\/([^\/]+)\//);
+            if (viMatch) currentImageKey = `youtube:${viMatch[1]}`;
+        } else if (data.url && (data.url.includes('v=') || data.url.includes('youtu.be/'))) {
+            const m = data.url.match(/[?&]v=([^&#]+)/) || data.url.match(/youtu\.be\/([^&#]+)/);
+            if (m) currentImageKey = `youtube:${m[1]}`;
+        } else {
+            currentImageKey = null;
+        }
 
-        // 2. Cập nhật trạng thái ngay lập tức
+        // Cập nhật trạng thái tức thì
         updatePresence(true);
 
-        // 3. Tra cứu lời bài hát ngầm
+        // 2. Tra cứu lời bài hát ngầm
         fetchLyrics(data.title, data.artist).then(lyrics => {
             currentLyrics = lyrics;
             updatePresence(true);
         });
+
+        // 3. Nếu là SoundCloud / Apple Music / Web khác có link ảnh: Tự động nạp qua Discord CDN
+        if (!currentImageKey && data.artwork && (data.artwork.startsWith('http://') || data.artwork.startsWith('https://'))) {
+            uploadToDiscordCDN(data.artwork).then(cdnUrl => {
+                if (cdnUrl && currentTrack && currentTrack.title === data.title) {
+                    currentImageKey = cdnUrl;
+                    updatePresence(true);
+                }
+            });
+        }
 
     } else {
         updatePresence(false);
@@ -356,6 +430,7 @@ client.on('ready', async () => {
     console.log('🤖 Đang kích hoạt chế độ Rich Presence 24/7 (LISTENING)...');
     console.log('======================================================\n');
 
+    await initStorageChannel(client);
     updatePresence(true);
 
     setInterval(() => {
