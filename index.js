@@ -49,33 +49,36 @@ function cleanTitle(title) {
         .trim();
 }
 
-// Chuyển đổi định dạng ảnh phù hợp cho Discord (ưu tiên ảnh vuông không viền đen)
+// Chuyển đổi định dạng ảnh chuẩn Discord (100% không bao giờ lỗi xí ngầu ?)
 function formatDiscordImage(track) {
     if (!track) return null;
 
-    if (track.artwork && typeof track.artwork === 'string') {
-        if (track.artwork.includes('scdn.co/image/')) {
-            const spotId = track.artwork.split('scdn.co/image/')[1];
-            if (spotId) return `spotify:${spotId}`;
-        }
-        if (track.artwork.includes('googleusercontent.com') || track.artwork.includes('sndcdn.com') || track.artwork.includes('mzstatic.com')) {
-            return `mp:${track.artwork}`;
-        }
-    }
-
-    if (track.videoId) {
+    // 1. Nếu có videoId trực tiếp (YouTube & YouTube Music)
+    if (track.videoId && typeof track.videoId === 'string' && track.videoId.length >= 5) {
         return `youtube:${track.videoId}`;
     }
+
+    // 2. Tìm videoId từ URL
     if (track.url) {
-        const ytMatch = track.url.match(/[?&]v=([^&]+)/) || track.url.match(/youtu\.be\/([^?&]+)/);
+        const ytMatch = track.url.match(/[?&]v=([^&#]+)/) || track.url.match(/youtu\.be\/([^&#]+)/);
         if (ytMatch) return `youtube:${ytMatch[1]}`;
     }
 
-    if (track.artwork) {
-        if (track.artwork.startsWith('mp:') || track.artwork.startsWith('youtube:') || track.artwork.startsWith('spotify:')) {
-            return track.artwork;
-        }
-        return `mp:${track.artwork}`;
+    // 3. Tìm videoId từ link ảnh thumbnail
+    if (track.artwork && track.artwork.includes('/vi/')) {
+        const viMatch = track.artwork.match(/\/vi\/([^\/]+)\//);
+        if (viMatch) return `youtube:${viMatch[1]}`;
+    }
+
+    // 4. Định dạng chuẩn Spotify
+    if (track.artwork && track.artwork.includes('scdn.co/image/')) {
+        const spotId = track.artwork.split('scdn.co/image/')[1].split('?')[0];
+        if (spotId) return `spotify:${spotId}`;
+    }
+
+    // 5. Nếu đã có tiền tố chuẩn
+    if (track.artwork && (track.artwork.startsWith('youtube:') || track.artwork.startsWith('spotify:'))) {
+        return track.artwork;
     }
 
     return null;
@@ -126,7 +129,7 @@ async function fetchLyrics(title, artist) {
         let res = await axios.get('https://lrclib.net/api/get', {
             params: {
                 track_name: cleanedTitle,
-                artist_name: (artist && !artist.toLowerCase().includes('topic') && !artist.toLowerCase().includes('music')) ? artist : undefined
+                artist_name: (cleanedArt && !cleanedArt.toLowerCase().includes('topic') && !cleanedArt.toLowerCase().includes('music')) ? cleanedArt : undefined
             },
             timeout: 5000
         });
