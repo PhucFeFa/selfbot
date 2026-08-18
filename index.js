@@ -18,6 +18,12 @@ let lastTrackId = '';
 let lastMusicUpdate = 0;
 const lyricsCache = new Map();
 
+function formatDiscordImage(url) {
+    if (!url) return null;
+    if (url.startsWith('mp:') || url.startsWith('youtube:') || url.startsWith('spotify:')) return url;
+    return `mp:${url}`;
+}
+
 // Làm sạch tên bài hát
 function cleanTitle(title) {
     if (!title) return '';
@@ -119,10 +125,10 @@ const client = new Client({ checkUpdate: false });
 const startTime = Date.now();
 
 // Cập nhật trạng thái Rich Presence lên Discord
-function updatePresence() {
+async function updatePresence() {
     if (!client.user) return;
 
-    const isMusicActive = currentTrack && !currentTrack.paused && (Date.now() - lastMusicUpdate < 15000);
+    const isMusicActive = currentTrack && !currentTrack.paused && (Date.now() - lastMusicUpdate < 20000);
 
     try {
         if (isMusicActive) {
@@ -152,8 +158,8 @@ function updatePresence() {
                 .setDetails(`🎵 ${songName}`.substring(0, 127))
                 .setState(currentLyricLine ? `🎤 ${currentLyricLine}`.substring(0, 127) : `👤 ${artistName}`.substring(0, 127));
 
-            if (track.artwork && (track.artwork.startsWith('http://') || track.artwork.startsWith('https://'))) {
-                presence.setAssetsLargeImage(track.artwork);
+            if (track.artwork && (track.artwork.startsWith('http://') || track.artwork.startsWith('https://') || track.artwork.startsWith('mp:'))) {
+                presence.setAssetsLargeImage(formatDiscordImage(track.artwork));
                 presence.setAssetsLargeText(`${songName} - ${artistName}`.substring(0, 127));
             }
 
@@ -167,7 +173,7 @@ function updatePresence() {
             }
             presence.addButton('PhucFeFa', 'https://github.com/PhucFeFa');
 
-            client.user.setActivity(presence);
+            await client.user.setActivity(presence);
 
         } else {
             // --- CHẾ ĐỘ MẶC ĐỊNH (Không nghe nhạc) ---
@@ -180,10 +186,10 @@ function updatePresence() {
                 .addButton('PhucFeFa', 'https://github.com/PhucFeFa')
                 .addButton('snvv', 'https://www.instagram.com/lhphucclh?igsh=dHc4dmlqd2tseGE1&igsi=dHc4dmlqd2tseGE1&utm_source=qr');
 
-            client.user.setActivity(presence);
+            await client.user.setActivity(presence);
         }
     } catch (err) {
-        // bỏ qua lỗi cập nhật activity tạm thời
+        console.error('❌ Lỗi updatePresence:', err.message);
     }
 }
 
