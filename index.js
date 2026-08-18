@@ -59,20 +59,17 @@ function cleanTitle(title) {
         .trim();
 }
 
-// Tra cứu Video ID để dùng định dạng native youtube:VIDEO_ID (100% chuẩn không bao giờ lỗi ?)
+// Tra cứu Video ID để dùng định dạng native youtube:VIDEO_ID
 async function resolveYouTubeId(title, artist, fallbackTrack) {
-    // 1. Nếu từ trình duyệt đã gửi videoId
     if (fallbackTrack && fallbackTrack.videoId && typeof fallbackTrack.videoId === 'string' && fallbackTrack.videoId.length >= 5) {
         return fallbackTrack.videoId;
     }
 
-    // 2. Tìm trong URL
     if (fallbackTrack && fallbackTrack.url) {
         const ytMatch = fallbackTrack.url.match(/[?&]v=([^&#]+)/) || fallbackTrack.url.match(/youtu\.be\/([^&#]+)/);
         if (ytMatch) return ytMatch[1];
     }
 
-    // 3. Tìm trong link ảnh
     if (fallbackTrack && fallbackTrack.artwork && fallbackTrack.artwork.includes('/vi/')) {
         const viMatch = fallbackTrack.artwork.match(/\/vi\/([^\/]+)\//);
         if (viMatch) return viMatch[1];
@@ -87,7 +84,6 @@ async function resolveYouTubeId(title, artist, fallbackTrack) {
         return youtubeIdCache.get(cacheKey);
     }
 
-    // 4. Tra cứu tự động trên YouTube Search
     try {
         const url = 'https://www.youtube.com/results?search_query=' + encodeURIComponent(query);
         const res = await axios.get(url, {
@@ -134,7 +130,7 @@ function parseLRC(lrcText) {
     return result;
 }
 
-// Lấy lời bài hát từ LRCLIB (Đa tầng thông minh)
+// Lấy lời bài hát từ LRCLIB
 async function fetchLyrics(title, artist) {
     const cleanedTitle = cleanTitle(title);
     const primaryArtist = getPrimaryArtist(artist);
@@ -230,7 +226,7 @@ async function updatePresence(force = false) {
 
     try {
         if (isMusicActive) {
-            // --- CHẾ ĐỘ PHÁT NHẠC ---
+            // --- CHẾ ĐỘ PHÁT NHẠC (Đang nghe...) ---
             const track = currentTrack;
             
             const elapsedSincePing = (Date.now() - lastMusicUpdate) / 1000;
@@ -270,7 +266,7 @@ async function updatePresence(force = false) {
 
             const presence = new RichPresence(client)
                 .setApplicationId(CLIENT_ID)
-                .setType('PLAYING')
+                .setType('LISTENING') // 🎧 Đang nghe (Listening)
                 .setName('PhucLam')
                 .setDetails(detailsText)
                 .setState(stateText);
@@ -293,8 +289,8 @@ async function updatePresence(force = false) {
             await client.user.setActivity(presence);
 
         } else {
-            // --- CHẾ ĐỘ MẶC ĐỊNH (Khi dừng/tắt nhạc) ---
-            const presenceKey = 'DEFAULT';
+            // --- CHẾ ĐỘ MẶC ĐỊNH (Đang nghe PhucLam - Gender: Male) ---
+            const presenceKey = 'DEFAULT_LISTENING';
             if (!force && presenceKey === lastPresenceKey && (Date.now() - lastSetActivityTime < 20000)) {
                 return;
             }
@@ -303,7 +299,7 @@ async function updatePresence(force = false) {
 
             const presence = new RichPresence(client)
                 .setApplicationId(CLIENT_ID)
-                .setType('PLAYING')
+                .setType('LISTENING') // 🎧 Đang nghe (Listening)
                 .setName('PhucLam')
                 .setDetails('Gender: Male')
                 .setStartTimestamp(startTime)
@@ -333,8 +329,6 @@ async function handleTrackData(data) {
         lastPresenceKey = '';
         console.log(`\n🎵 BÀI HÁT MỚI: "${data.title}" (${cleanArtist(data.artist)}) trên ${data.platform || 'Web'}`);
         
-        // 1. Tìm lời bài hát
-        // 2. Tra cứu Video ID chuẩn YouTube Native
         const [lyrics, ytVideoId] = await Promise.all([
             fetchLyrics(data.title, data.artist),
             resolveYouTubeId(data.title, data.artist, data)
@@ -403,7 +397,7 @@ app.listen(PORT, () => {
 client.on('ready', async () => {
     console.log('\n======================================================');
     console.log(`🎉 ĐÃ ĐĂNG NHẬP THÀNH CÔNG: ${client.user.tag}`);
-    console.log('🤖 Đang kích hoạt chế độ Rich Presence 24/7 + Music & Lyrics...');
+    console.log('🤖 Đang kích hoạt chế độ Rich Presence 24/7 (LISTENING)...');
     console.log('======================================================\n');
 
     updatePresence(true);
