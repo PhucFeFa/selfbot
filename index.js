@@ -169,8 +169,8 @@ const startTime = Date.now();
 async function updatePresence(force = false) {
     if (!client.user) return;
 
-    // Nếu quá 6 giây không nhận được gói tin nhạc (hoặc đã pause) -> Coi như đã tắt nhạc
-    const isMusicActive = currentTrack && !currentTrack.paused && (Date.now() - lastMusicUpdate < 6000);
+    // Nếu quá 7 giây không nhận được tín hiệu -> quay về mặc định
+    const isMusicActive = currentTrack && !currentTrack.paused && (Date.now() - lastMusicUpdate < 7000);
 
     if (!isMusicActive && currentTrack) {
         currentTrack = null;
@@ -244,7 +244,7 @@ async function updatePresence(force = false) {
             await client.user.setActivity(presence);
 
         } else {
-            // --- CHẾ ĐỘ MẶC ĐỊNH (Khi đã dừng/tắt nhạc) ---
+            // --- CHẾ ĐỘ MẶC ĐỊNH (Khi dừng/tắt nhạc) ---
             const presenceKey = 'DEFAULT';
             if (!force && presenceKey === lastPresenceKey && (Date.now() - lastSetActivityTime < 20000)) {
                 return;
@@ -262,24 +262,17 @@ async function updatePresence(force = false) {
                 .addButton('snvv', 'https://www.instagram.com/lhphucclh?igsh=dHc4dmlqd2tseGE1&igsi=dHc4dmlqd2tseGE1&utm_source=qr');
 
             await client.user.setActivity(presence);
-            console.log('🔄 Đã tự động quay về trạng thái mặc định (Gender: Male)');
         }
     } catch (err) {
         console.error('❌ Lỗi updatePresence:', err.message);
     }
 }
 
-// Router nhận dữ liệu nhạc từ trình duyệt
-app.get('/', (req, res) => {
-    res.send('✅ Discord 24/7 Music & Synced Lyrics Selfbot is RUNNING!');
-});
-
-app.post('/track', async (req, res) => {
-    const data = req.body;
+function handleTrackData(data) {
     if (!data || !data.title || data.paused) {
         currentTrack = null;
         updatePresence(true);
-        return res.json({ ok: true, reset: true });
+        return { ok: true, reset: true };
     }
 
     lastMusicUpdate = Date.now();
@@ -290,13 +283,34 @@ app.post('/track', async (req, res) => {
         lastTrackId = trackId;
         lastPresenceKey = '';
         console.log(`\n🎵 BÀI HÁT MỚI: "${data.title}" (${cleanArtist(data.artist)}) trên ${data.platform || 'Web'}`);
-        currentLyrics = await fetchLyrics(data.title, data.artist);
-        updatePresence(true);
+        fetchLyrics(data.title, data.artist).then(lyrics => {
+            currentLyrics = lyrics;
+            updatePresence(true);
+        });
     } else {
         updatePresence(false);
     }
 
-    res.json({ ok: true });
+    return { ok: true };
+}
+
+// Router nhận dữ liệu nhạc từ trình duyệt (Hỗ trợ cả POST và GET)
+app.get('/', (req, res) => {
+    res.send('✅ Discord 24/7 Music & Synced Lyrics Selfbot is RUNNING!');
+});
+
+app.post('/track', (req, res) => {
+    const result = handleTrackData(req.body);
+    res.json(result);
+});
+
+app.get('/track', (req, res) => {
+    const data = { ...req.query };
+    data.currentTime = parseFloat(data.currentTime) || 0;
+    data.duration = parseFloat(data.duration) || 0;
+    data.paused = data.paused === 'true';
+    const result = handleTrackData(data);
+    res.json(result);
 });
 
 app.post('/stop', (req, res) => {
@@ -304,7 +318,14 @@ app.post('/stop', (req, res) => {
     lastTrackId = '';
     currentLyrics = [];
     updatePresence(true);
-    console.log('🛑 Đã nhận lệnh dừng nhạc từ trình duyệt');
+    res.json({ ok: true });
+});
+
+app.get('/stop', (req, res) => {
+    currentTrack = null;
+    lastTrackId = '';
+    currentLyrics = [];
+    updatePresence(true);
     res.json({ ok: true });
 });
 
