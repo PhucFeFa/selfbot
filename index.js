@@ -14,11 +14,14 @@ const CLIENT_ID = '1538974355193593856';
 // Trạng thái bài hát hiện tại
 let currentTrack = null;
 let currentLyrics = [];
+let currentArtworkKey = null;
 let lastTrackId = '';
 let lastMusicUpdate = 0;
 let lastPresenceKey = '';
 let lastSetActivityTime = 0;
+
 const lyricsCache = new Map();
+const artworkCache = new Map();
 
 // Làm sạch tên ca sĩ (loại bỏ - Topic, VEVO, Official...)
 function cleanArtist(artist) {
@@ -29,6 +32,13 @@ function cleanArtist(artist) {
         .replace(/VEVO$/gi, '')
         .replace(/Official$/gi, '')
         .trim();
+}
+
+// Lấy ca sĩ chính (loại bỏ các ca sĩ phụ / ft / và)
+function getPrimaryArtist(artist) {
+    if (!artist) return '';
+    const cleaned = cleanArtist(artist);
+    return cleaned.split(/,| và | ft\. | feat\. | x | & /i)[0].trim();
 }
 
 // Làm sạch tên bài hát
@@ -47,41 +57,6 @@ function cleanTitle(title) {
         .replace(/-.*MV$/gi, '')
         .replace(/\s*-\s*Topic\s*/gi, '')
         .trim();
-}
-
-// Chuyển đổi định dạng ảnh chuẩn Discord (100% không bao giờ lỗi xí ngầu ?)
-function formatDiscordImage(track) {
-    if (!track) return null;
-
-    // 1. Nếu có videoId trực tiếp (YouTube & YouTube Music)
-    if (track.videoId && typeof track.videoId === 'string' && track.videoId.length >= 5) {
-        return `youtube:${track.videoId}`;
-    }
-
-    // 2. Tìm videoId từ URL
-    if (track.url) {
-        const ytMatch = track.url.match(/[?&]v=([^&#]+)/) || track.url.match(/youtu\.be\/([^&#]+)/);
-        if (ytMatch) return `youtube:${ytMatch[1]}`;
-    }
-
-    // 3. Tìm videoId từ link ảnh thumbnail
-    if (track.artwork && track.artwork.includes('/vi/')) {
-        const viMatch = track.artwork.match(/\/vi\/([^\/]+)\//);
-        if (viMatch) return `youtube:${viMatch[1]}`;
-    }
-
-    // 4. Định dạng chuẩn Spotify
-    if (track.artwork && track.artwork.includes('scdn.co/image/')) {
-        const spotId = track.artwork.split('scdn.co/image/')[1].split('?')[0];
-        if (spotId) return `spotify:${spotId}`;
-    }
-
-    // 5. Nếu đã có tiền tố chuẩn
-    if (track.artwork && (track.artwork.startsWith('youtube:') || track.artwork.startsWith('spotify:'))) {
-        return track.artwork;
-    }
-
-    return null;
 }
 
 // Phân tích cú pháp LRC [mm:ss.xx]
@@ -113,39 +88,114 @@ function parseLRC(lrcText) {
     return result;
 }
 
-// Lấy lời bài hát từ LRCLIB
+// Tìm ảnh bìa Album HD vuông 1:1 chuẩn quốc tế (không bao giờ bị viền đen)
+async function fetchHighResArtwork(title, artist, fallbackTrack) {
+    const cleanedTitle = cleanTitle(title);
+    const primaryArtist = getPrimaryArtist(artist);
+    const cacheKey = `${cleanedTitle} - ${primaryArtist}`.toLowerCase();
+
+    if (artworkCache.has(cacheKey)) {
+        return artworkCache.get(cacheKey);
+    }
+
+    // 1. Tìm ảnh bìa HD 600x600 từ iTunes
+    try {
+        const res = await axios.get('https://itunes.apple.com/search', {
+            params: {
+                term: `${cleanedTitle} ${primaryArtist}`.trim(),
+                entity: 'song',
+                limit: 1
+            },
+            timeout: 4000
+        });
+
+        if (res.data && res.data.results && res.data.results.length > 0) {
+            const rawUrl = res.data.results[0].artworkUrl100;
+            if (rawUrl) {
+                const highResUrl = rawUrl.replace('100x100bb', '600x600bb');
+                const discordImg = `mp:${highResUrl}`;
+                artworkCache.set(cacheKey, discordImg);
+                console.log(`🖼️ Đã tìm thấy ảnh bìa Album vuông HD từ iTunes cho "${cleanedTitle}"`);
+                return discordImg;
+            }
+        }
+    } catch (e) {}
+
+    // 2. Định dạng Spotify Native
+    if (fallbackTrack && fallbackTrack.artwork && fallbackTrack.artwork.includes('scdn.co/image/')) {
+        const spotId = fallbackTrack.artwork.split('scdn.co/image/')[1].split('?')[0];
+        if (spotId) {
+            const discordImg = `spotify:${spotId}`;
+            artworkCache.set(cacheKey, discordImg);
+            return discordImg;
+        }
+    }
+
+    // 3. Định dạng YouTube Native
+    if (fallbackTrack) {
+        if (fallbackTrack.videoId) {
+            const discordImg = `youtube:${fallbackTrack.videoId}`;
+            artworkCache.set(cacheKey, discordImg);
+            return discordImg;
+        }
+        if (fallbackTrack.url) {
+            const ytMatch = fallbackTrack.url.match(/[?&]v=([^&#]+)/) || fallbackTrack.url.match(/youtu\.be\/([^&#]+)/);
+            if (ytMatch) {
+                const discordImg = `youtube:${ytMatch[1]}`;
+                artworkCache.set(cacheKey, discordImg);
+                return discordImg;
+            }
+        }
+        if (fallbackTrack.artwork && fallbackTrack.artwork.includes('/vi/')) {
+            const viMatch = fallbackTrack.artwork.match(/\/vi\/([^\/]+)\//);
+            if (viMatch) {
+                const discordImg = `youtube:${viMatch[1]}`;
+                artworkCache.set(cacheKey, discordImg);
+                return discordImg;
+            }
+        }
+    }
+
+    return null;
+}
+
+// Lấy lời bài hát từ LRCLIB (Tìm kiếm đa tầng thông minh)
 async function fetchLyrics(title, artist) {
     const cleanedTitle = cleanTitle(title);
-    const cleanedArt = cleanArtist(artist);
-    const cacheKey = `${cleanedTitle} - ${cleanedArt}`.toLowerCase();
+    const primaryArtist = getPrimaryArtist(artist);
+    const cacheKey = `${cleanedTitle} - ${primaryArtist}`.toLowerCase();
 
     if (lyricsCache.has(cacheKey)) {
         return lyricsCache.get(cacheKey);
     }
 
-    console.log(`🔍 Đang tìm lời bài hát: "${cleanedTitle}" - ${cleanedArt || 'Unknown'}`);
+    console.log(`🔍 Đang tìm lời: "${cleanedTitle}" (Ca sĩ: "${primaryArtist || 'Unknown'}")`);
 
+    // 1. Tìm chính xác với ca sĩ chính
     try {
         let res = await axios.get('https://lrclib.net/api/get', {
             params: {
                 track_name: cleanedTitle,
-                artist_name: (cleanedArt && !cleanedArt.toLowerCase().includes('topic') && !cleanedArt.toLowerCase().includes('music')) ? cleanedArt : undefined
+                artist_name: primaryArtist || undefined
             },
-            timeout: 5000
+            timeout: 4000
         });
 
         if (res.data && res.data.syncedLyrics) {
             const parsed = parseLRC(res.data.syncedLyrics);
             lyricsCache.set(cacheKey, parsed);
-            console.log(`✨ Đã tìm thấy lời bài hát (${parsed.length} câu)`);
+            console.log(`✨ Đã tìm thấy lời bài hát khớp thời gian (${parsed.length} câu)`);
             return parsed;
         }
+    } catch (e) {}
 
-        res = await axios.get('https://lrclib.net/api/search', {
+    // 2. Tìm kiếm theo cụm từ "Tên bài + Ca sĩ chính"
+    try {
+        let res = await axios.get('https://lrclib.net/api/search', {
             params: {
-                q: `${cleanedTitle} ${cleanedArt || ''}`.trim()
+                q: `${cleanedTitle} ${primaryArtist}`.trim()
             },
-            timeout: 5000
+            timeout: 4000
         });
 
         if (res.data && res.data.length > 0) {
@@ -153,7 +203,28 @@ async function fetchLyrics(title, artist) {
                 if (item.syncedLyrics) {
                     const parsed = parseLRC(item.syncedLyrics);
                     lyricsCache.set(cacheKey, parsed);
-                    console.log(`✨ Đã tìm thấy lời bài hát từ kết quả tìm kiếm: "${item.trackName}"`);
+                    console.log(`✨ Đã tìm thấy lời bài hát từ kết quả: "${item.trackName}" - ${item.artistName}`);
+                    return parsed;
+                }
+            }
+        }
+    } catch (e) {}
+
+    // 3. Tìm kiếm theo tên bài hát
+    try {
+        let res = await axios.get('https://lrclib.net/api/search', {
+            params: {
+                q: cleanedTitle
+            },
+            timeout: 4000
+        });
+
+        if (res.data && res.data.length > 0) {
+            for (const item of res.data) {
+                if (item.syncedLyrics) {
+                    const parsed = parseLRC(item.syncedLyrics);
+                    lyricsCache.set(cacheKey, parsed);
+                    console.log(`✨ Đã tìm thấy lời bài hát theo tên bài: "${item.trackName}"`);
                     return parsed;
                 }
             }
@@ -179,6 +250,7 @@ async function updatePresence(force = false) {
         currentTrack = null;
         lastTrackId = '';
         currentLyrics = [];
+        currentArtworkKey = null;
     }
 
     try {
@@ -214,7 +286,7 @@ async function updatePresence(force = false) {
             const detailsText = `🎵 ${songName}`.substring(0, 127);
             const stateText = activeLyric ? `🎤 ${activeLyric}`.substring(0, 127) : `🎧 ${artistName}`.substring(0, 127);
 
-            const presenceKey = `MUSIC|${songName}|${stateText}`;
+            const presenceKey = `MUSIC|${songName}|${stateText}|${currentArtworkKey}`;
             if (!force && presenceKey === lastPresenceKey && (Date.now() - lastSetActivityTime < 12000)) {
                 return;
             }
@@ -228,9 +300,8 @@ async function updatePresence(force = false) {
                 .setDetails(detailsText)
                 .setState(stateText);
 
-            const imageKey = formatDiscordImage(track);
-            if (imageKey) {
-                presence.setAssetsLargeImage(imageKey);
+            if (currentArtworkKey) {
+                presence.setAssetsLargeImage(currentArtworkKey);
                 presence.setAssetsLargeText(`${songName} - ${artistName}`.substring(0, 127));
             }
 
@@ -271,7 +342,7 @@ async function updatePresence(force = false) {
     }
 }
 
-function handleTrackData(data) {
+async function handleTrackData(data) {
     if (!data || !data.title || data.paused) {
         currentTrack = null;
         updatePresence(true);
@@ -286,10 +357,16 @@ function handleTrackData(data) {
         lastTrackId = trackId;
         lastPresenceKey = '';
         console.log(`\n🎵 BÀI HÁT MỚI: "${data.title}" (${cleanArtist(data.artist)}) trên ${data.platform || 'Web'}`);
-        fetchLyrics(data.title, data.artist).then(lyrics => {
-            currentLyrics = lyrics;
-            updatePresence(true);
-        });
+        
+        // Tìm song song Lời bài hát & Ảnh bìa HD
+        const [lyrics, artwork] = await Promise.all([
+            fetchLyrics(data.title, data.artist),
+            fetchHighResArtwork(data.title, data.artist, data)
+        ]);
+
+        currentLyrics = lyrics;
+        currentArtworkKey = artwork;
+        updatePresence(true);
     } else {
         updatePresence(false);
     }
@@ -302,17 +379,17 @@ app.get('/', (req, res) => {
     res.send('✅ Discord 24/7 Music & Synced Lyrics Selfbot is RUNNING!');
 });
 
-app.post('/track', (req, res) => {
-    const result = handleTrackData(req.body);
+app.post('/track', async (req, res) => {
+    const result = await handleTrackData(req.body);
     res.json(result);
 });
 
-app.get('/track', (req, res) => {
+app.get('/track', async (req, res) => {
     const data = { ...req.query };
     data.currentTime = parseFloat(data.currentTime) || 0;
     data.duration = parseFloat(data.duration) || 0;
     data.paused = data.paused === 'true';
-    const result = handleTrackData(data);
+    const result = await handleTrackData(data);
     res.json(result);
 });
 
@@ -320,6 +397,7 @@ app.post('/stop', (req, res) => {
     currentTrack = null;
     lastTrackId = '';
     currentLyrics = [];
+    currentArtworkKey = null;
     updatePresence(true);
     res.json({ ok: true });
 });
@@ -328,6 +406,7 @@ app.get('/stop', (req, res) => {
     currentTrack = null;
     lastTrackId = '';
     currentLyrics = [];
+    currentArtworkKey = null;
     updatePresence(true);
     res.json({ ok: true });
 });
