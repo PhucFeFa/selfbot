@@ -21,7 +21,6 @@ let lastPresenceKey = '';
 let lastSetActivityTime = 0;
 
 const lyricsCache = new Map();
-const youtubeIdCache = new Map();
 
 // Làm sạch tên ca sĩ (loại bỏ - Topic, VEVO, Official...)
 function cleanArtist(artist) {
@@ -59,43 +58,28 @@ function cleanTitle(title) {
         .trim();
 }
 
-// Tra cứu Video ID từ YouTube
-async function resolveYouTubeId(title, artist, fallbackTrack) {
-    if (fallbackTrack && fallbackTrack.videoId && typeof fallbackTrack.videoId === 'string' && fallbackTrack.videoId.length >= 5) {
-        return fallbackTrack.videoId;
-    }
-    if (fallbackTrack && fallbackTrack.url) {
-        const ytMatch = fallbackTrack.url.match(/[?&]v=([^&#]+)/) || fallbackTrack.url.match(/youtu\.be\/([^&#]+)/);
-        if (ytMatch) return ytMatch[1];
-    }
-    if (fallbackTrack && fallbackTrack.artwork && fallbackTrack.artwork.includes('/vi/')) {
-        const viMatch = fallbackTrack.artwork.match(/\/vi\/([^\/]+)\//);
-        if (viMatch) return viMatch[1];
-    }
+// LẤY CHÍNH XÁC ẢNH BÌA TỪ NGUỒN PHÁT (TUYỆT ĐỐI KHÔNG TÌM KIẾM BỪA TRÊN YOUTUBE ĐỂ TRÁNH LẤY NHẦM ẢNH)
+function getExactArtworkKey(track) {
+    if (!track) return null;
 
-    const cleanedTitle = cleanTitle(title);
-    const primaryArtist = getPrimaryArtist(artist);
-    const query = `${cleanedTitle} ${primaryArtist}`.trim();
-    const cacheKey = query.toLowerCase();
-
-    if (youtubeIdCache.has(cacheKey)) {
-        return youtubeIdCache.get(cacheKey);
+    // 1. YouTube & YouTube Music: Dùng chính xác Video ID đang phát trong tab
+    if (track.videoId && typeof track.videoId === 'string' && track.videoId.length >= 5) {
+        return `youtube:${track.videoId}`;
+    }
+    if (track.url) {
+        const ytMatch = track.url.match(/[?&]v=([^&#]+)/) || track.url.match(/youtu\.be\/([^&#]+)/);
+        if (ytMatch) return `youtube:${ytMatch[1]}`;
+    }
+    if (track.artwork && track.artwork.includes('/vi/')) {
+        const viMatch = track.artwork.match(/\/vi\/([^\/]+)\//);
+        if (viMatch) return `youtube:${viMatch[1]}`;
     }
 
-    try {
-        const url = 'https://www.youtube.com/results?search_query=' + encodeURIComponent(query);
-        const res = await axios.get(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-            timeout: 3500
-        });
-
-        const match = res.data.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
-        if (match && match[1]) {
-            youtubeIdCache.set(cacheKey, match[1]);
-            console.log(`🎬 Đã tra cứu Video ID cho "${query}": ${match[1]}`);
-            return match[1];
-        }
-    } catch (e) {}
+    // 2. Spotify: Dùng chính xác Image ID từ Spotify CDN
+    if (track.artwork && track.artwork.includes('scdn.co/image/')) {
+        const spotId = track.artwork.split('scdn.co/image/')[1].split('?')[0];
+        if (spotId) return `spotify:${spotId}`;
+    }
 
     return null;
 }
@@ -185,6 +169,7 @@ const startTime = Date.now();
 async function updatePresence(force = false) {
     if (!client.user) return;
 
+    // Nếu quá 7 giây không nhận được tín hiệu -> quay về mặc định
     const isMusicActive = currentTrack && !currentTrack.paused && (Date.now() - lastMusicUpdate < 7000);
 
     if (!isMusicActive && currentTrack) {
@@ -305,40 +290,17 @@ async function handleTrackData(data) {
         lastPresenceKey = '';
         console.log(`\n🎵 BÀI HÁT: "${data.title}" (${cleanArtist(data.artist)}) trên ${data.platform || 'Web'}`);
 
-        // ⚡ GÁN NGAY ẢNH BÌA ĐỒNG BỘ 0ms (Không bị độ trễ chờ đợi)
-        if (data.videoId && typeof data.videoId === 'string' && data.videoId.length >= 5) {
-            currentImageKey = `youtube:${data.videoId}`;
-        } else if (data.artwork && data.artwork.includes('scdn.co/image/')) {
-            const spotId = data.artwork.split('scdn.co/image/')[1].split('?')[0];
-            currentImageKey = `spotify:${spotId}`;
-        } else if (data.artwork && data.artwork.includes('/vi/')) {
-            const viMatch = data.artwork.match(/\/vi\/([^\/]+)\//);
-            if (viMatch) currentImageKey = `youtube:${viMatch[1]}`;
-        } else if (data.url && (data.url.includes('v=') || data.url.includes('youtu.be/'))) {
-            const m = data.url.match(/[?&]v=([^&#]+)/) || data.url.match(/youtu\.be\/([^&#]+)/);
-            if (m) currentImageKey = `youtube:${m[1]}`;
-        } else {
-            currentImageKey = null;
-        }
+        // 1. Lấy CHÍNH XÁC ảnh bìa từ nguồn phát (Không đoán mò trên YouTube)
+        currentImageKey = getExactArtworkKey(data);
 
-        // Cập nhật trạng thái tức thì ngay khung hình đầu tiên
+        // 2. Cập nhật trạng thái ngay lập tức
         updatePresence(true);
 
-        // Tra cứu ngầm Lời bài hát
+        // 3. Tra cứu lời bài hát ngầm
         fetchLyrics(data.title, data.artist).then(lyrics => {
             currentLyrics = lyrics;
             updatePresence(true);
         });
-
-        // Nếu chưa có ảnh (ví dụ nghe SoundCloud), tra cứu ngầm videoId
-        if (!currentImageKey) {
-            resolveYouTubeId(data.title, data.artist, data).then(foundId => {
-                if (foundId) {
-                    currentImageKey = `youtube:${foundId}`;
-                    updatePresence(true);
-                }
-            });
-        }
 
     } else {
         updatePresence(false);
