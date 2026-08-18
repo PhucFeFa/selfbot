@@ -21,7 +21,6 @@ let lastPresenceKey = '';
 let lastSetActivityTime = 0;
 
 const lyricsCache = new Map();
-const youtubeIdCache = new Map();
 
 // Làm sạch tên ca sĩ (loại bỏ - Topic, VEVO, Official...)
 function cleanArtist(artist) {
@@ -59,44 +58,33 @@ function cleanTitle(title) {
         .trim();
 }
 
-// Tra cứu Video ID để dùng định dạng native youtube:VIDEO_ID
-async function resolveYouTubeId(title, artist, fallbackTrack) {
-    if (fallbackTrack && fallbackTrack.videoId && typeof fallbackTrack.videoId === 'string' && fallbackTrack.videoId.length >= 5) {
-        return fallbackTrack.videoId;
+// Lấy chính xác ảnh bìa từ nguồn bài hát (Không đoán mò, không tìm bừa)
+function getExactArtworkKey(track) {
+    if (!track) return null;
+
+    // 1. YouTube & YouTube Music: Dùng chính xác Video ID đang phát
+    if (track.videoId && typeof track.videoId === 'string' && track.videoId.length >= 5) {
+        return `youtube:${track.videoId}`;
+    }
+    if (track.url) {
+        const ytMatch = track.url.match(/[?&]v=([^&#]+)/) || track.url.match(/youtu\.be\/([^&#]+)/);
+        if (ytMatch) return `youtube:${ytMatch[1]}`;
     }
 
-    if (fallbackTrack && fallbackTrack.url) {
-        const ytMatch = fallbackTrack.url.match(/[?&]v=([^&#]+)/) || fallbackTrack.url.match(/youtu\.be\/([^&#]+)/);
-        if (ytMatch) return ytMatch[1];
+    // 2. Spotify: Dùng chính xác Image ID từ Spotify CDN
+    if (track.artwork && track.artwork.includes('scdn.co/image/')) {
+        const spotId = track.artwork.split('scdn.co/image/')[1].split('?')[0];
+        if (spotId) return `spotify:${spotId}`;
     }
 
-    if (fallbackTrack && fallbackTrack.artwork && fallbackTrack.artwork.includes('/vi/')) {
-        const viMatch = fallbackTrack.artwork.match(/\/vi\/([^\/]+)\//);
-        if (viMatch) return viMatch[1];
+    // 3. SoundCloud / Apple Music / Khác: Dùng chính xác ảnh bìa gốc của bài hát trên trang đó
+    if (track.artwork && (track.artwork.startsWith('http://') || track.artwork.startsWith('https://'))) {
+        return `mp:${track.artwork}`;
     }
 
-    const cleanedTitle = cleanTitle(title);
-    const primaryArtist = getPrimaryArtist(artist);
-    const query = `${cleanedTitle} ${primaryArtist}`.trim();
-    const cacheKey = query.toLowerCase();
-
-    if (youtubeIdCache.has(cacheKey)) {
-        return youtubeIdCache.get(cacheKey);
+    if (track.artwork && (track.artwork.startsWith('youtube:') || track.artwork.startsWith('spotify:') || track.artwork.startsWith('mp:'))) {
+        return track.artwork;
     }
-
-    try {
-        const url = 'https://www.youtube.com/results?search_query=' + encodeURIComponent(query);
-        const res = await axios.get(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-            timeout: 3500
-        });
-        const match = res.data.match(/"videoId":"([^"]+)"/);
-        if (match && match[1]) {
-            youtubeIdCache.set(cacheKey, match[1]);
-            console.log(`🎬 Đã tra cứu Video ID cho "${query}": ${match[1]}`);
-            return match[1];
-        }
-    } catch (e) {}
 
     return null;
 }
@@ -140,8 +128,6 @@ async function fetchLyrics(title, artist) {
         return lyricsCache.get(cacheKey);
     }
 
-    console.log(`🔍 Đang tìm lời: "${cleanedTitle}" (Ca sĩ: "${primaryArtist || 'Unknown'}")`);
-
     // 1. Tìm chính xác với ca sĩ chính
     try {
         let res = await axios.get('https://lrclib.net/api/get', {
@@ -149,13 +135,12 @@ async function fetchLyrics(title, artist) {
                 track_name: cleanedTitle,
                 artist_name: primaryArtist || undefined
             },
-            timeout: 4000
+            timeout: 3000
         });
 
         if (res.data && res.data.syncedLyrics) {
             const parsed = parseLRC(res.data.syncedLyrics);
             lyricsCache.set(cacheKey, parsed);
-            console.log(`✨ Đã tìm thấy lời bài hát khớp thời gian (${parsed.length} câu)`);
             return parsed;
         }
     } catch (e) {}
@@ -166,7 +151,7 @@ async function fetchLyrics(title, artist) {
             params: {
                 q: `${cleanedTitle} ${primaryArtist}`.trim()
             },
-            timeout: 4000
+            timeout: 3000
         });
 
         if (res.data && res.data.length > 0) {
@@ -174,28 +159,6 @@ async function fetchLyrics(title, artist) {
                 if (item.syncedLyrics) {
                     const parsed = parseLRC(item.syncedLyrics);
                     lyricsCache.set(cacheKey, parsed);
-                    console.log(`✨ Đã tìm thấy lời bài hát từ kết quả: "${item.trackName}" - ${item.artistName}`);
-                    return parsed;
-                }
-            }
-        }
-    } catch (e) {}
-
-    // 3. Tìm kiếm theo tên bài hát
-    try {
-        let res = await axios.get('https://lrclib.net/api/search', {
-            params: {
-                q: cleanedTitle
-            },
-            timeout: 4000
-        });
-
-        if (res.data && res.data.length > 0) {
-            for (const item of res.data) {
-                if (item.syncedLyrics) {
-                    const parsed = parseLRC(item.syncedLyrics);
-                    lyricsCache.set(cacheKey, parsed);
-                    console.log(`✨ Đã tìm thấy lời bài hát theo tên bài: "${item.trackName}"`);
                     return parsed;
                 }
             }
@@ -203,7 +166,6 @@ async function fetchLyrics(title, artist) {
     } catch (e) {}
 
     lyricsCache.set(cacheKey, []);
-    console.log('ℹ️ Không có lời bài hát khớp thời gian cho bài này.');
     return [];
 }
 
@@ -257,10 +219,10 @@ async function updatePresence(force = false) {
             // 📌 DÒNG 1: Tên bài hát
             const detailsText = `🎵 ${songName}`.substring(0, 127);
             
-            // 📌 DÒNG 2: Tên ca sĩ (hoặc Nghệ sĩ thể hiện)
+            // 📌 DÒNG 2: Tên ca sĩ
             const stateText = `🎧 ${artistName}`.substring(0, 127);
 
-            // 📌 DÒNG 3 (Subtitle / Large Image Text): Lời bài hát chạy khớp từng giây (hoặc tên nền tảng nếu dạo nhạc)
+            // 📌 DÒNG 3: Lời bài hát chạy theo từng giây (hoặc platform nếu đang dạo nhạc)
             const largeImageText = activeLyric ? `🎤 ${activeLyric}` : `✨ ${platform}`;
 
             const presenceKey = `MUSIC|${songName}|${stateText}|${currentImageKey}|${largeImageText}`;
@@ -272,7 +234,7 @@ async function updatePresence(force = false) {
 
             const presence = new RichPresence(client)
                 .setApplicationId(CLIENT_ID)
-                .setType('LISTENING') // 🎧 Đang nghe (Listening)
+                .setType('LISTENING') // 🎧 Đang nghe
                 .setName('PhucLam')
                 .setDetails(detailsText)
                 .setState(stateText);
@@ -305,7 +267,7 @@ async function updatePresence(force = false) {
 
             const presence = new RichPresence(client)
                 .setApplicationId(CLIENT_ID)
-                .setType('LISTENING') // 🎧 Đang nghe (Listening)
+                .setType('LISTENING')
                 .setName('PhucLam')
                 .setDetails('Gender: Male')
                 .setStartTimestamp(startTime)
@@ -333,23 +295,16 @@ async function handleTrackData(data) {
     if (trackId !== lastTrackId) {
         lastTrackId = trackId;
         lastPresenceKey = '';
-        console.log(`\n🎵 BÀI HÁT MỚI: "${data.title}" (${cleanArtist(data.artist)}) trên ${data.platform || 'Web'}`);
+        console.log(`\n🎵 BÀI HÁT: "${data.title}" (${cleanArtist(data.artist)}) trên ${data.platform || 'Web'}`);
         
-        const [lyrics, ytVideoId] = await Promise.all([
-            fetchLyrics(data.title, data.artist),
-            resolveYouTubeId(data.title, data.artist, data)
-        ]);
+        // 1. Lấy CHÍNH XÁC ảnh bìa gốc của bài hát trên trang đó (Không tìm bừa trên YouTube)
+        currentImageKey = getExactArtworkKey(data);
 
-        currentLyrics = lyrics;
-
-        if (ytVideoId) {
-            currentImageKey = `youtube:${ytVideoId}`;
-        } else if (data.artwork && data.artwork.includes('scdn.co/image/')) {
-            const spotId = data.artwork.split('scdn.co/image/')[1].split('?')[0];
-            currentImageKey = `spotify:${spotId}`;
-        } else {
-            currentImageKey = null;
-        }
+        // 2. Tìm lời bài hát
+        fetchLyrics(data.title, data.artist).then(lyrics => {
+            currentLyrics = lyrics;
+            updatePresence(true);
+        });
 
         updatePresence(true);
     } else {
