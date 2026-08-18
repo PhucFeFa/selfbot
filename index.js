@@ -20,11 +20,40 @@ let lastPresenceKey = '';
 let lastSetActivityTime = 0;
 const lyricsCache = new Map();
 
+// Làm sạch tên ca sĩ (loại bỏ - Topic, VEVO, Official...)
+function cleanArtist(artist) {
+    if (!artist) return '';
+    return artist
+        .replace(/\s*-\s*Topic\s*/gi, '')
+        .replace(/\s*-\s*Chủ đề\s*/gi, '')
+        .replace(/VEVO$/gi, '')
+        .replace(/Official$/gi, '')
+        .trim();
+}
+
+// Làm sạch tên bài hát
+function cleanTitle(title) {
+    if (!title) return '';
+    return title
+        .replace(/\(Official.*?\)/gi, '')
+        .replace(/\[Official.*?\]/gi, '')
+        .replace(/\(Audio.*?\)/gi, '')
+        .replace(/\[Audio.*?\]/gi, '')
+        .replace(/\(Lyric.*?\)/gi, '')
+        .replace(/\[Lyric.*?\]/gi, '')
+        .replace(/\(MV.*?\)/gi, '')
+        .replace(/\[MV.*?\]/gi, '')
+        .replace(/\|.*$/g, '')
+        .replace(/-.*MV$/gi, '')
+        .replace(/\s*-\s*Topic\s*/gi, '')
+        .trim();
+}
+
 // Chuyển đổi định dạng ảnh phù hợp cho Discord
 function formatDiscordImage(track) {
     if (!track) return null;
     
-    // 1. YouTube: dùng native youtube:VIDEO_ID (ảnh nét căng, không bao giờ lỗi)
+    // 1. YouTube: dùng native youtube:VIDEO_ID (ảnh nét căng chuẩn HD)
     if (track.videoId) {
         return `youtube:${track.videoId}`;
     }
@@ -48,23 +77,6 @@ function formatDiscordImage(track) {
     }
 
     return null;
-}
-
-// Làm sạch tên bài hát
-function cleanTitle(title) {
-    if (!title) return '';
-    return title
-        .replace(/\(Official.*?\)/gi, '')
-        .replace(/\[Official.*?\]/gi, '')
-        .replace(/\(Audio.*?\)/gi, '')
-        .replace(/\[Audio.*?\]/gi, '')
-        .replace(/\(Lyric.*?\)/gi, '')
-        .replace(/\[Lyric.*?\]/gi, '')
-        .replace(/\(MV.*?\)/gi, '')
-        .replace(/\[MV.*?\]/gi, '')
-        .replace(/\|.*$/g, '')
-        .replace(/-.*MV$/gi, '')
-        .trim();
 }
 
 // Phân tích cú pháp LRC [mm:ss.xx]
@@ -99,19 +111,20 @@ function parseLRC(lrcText) {
 // Lấy lời bài hát từ LRCLIB
 async function fetchLyrics(title, artist) {
     const cleanedTitle = cleanTitle(title);
-    const cacheKey = `${cleanedTitle} - ${artist}`.toLowerCase();
+    const cleanedArt = cleanArtist(artist);
+    const cacheKey = `${cleanedTitle} - ${cleanedArt}`.toLowerCase();
 
     if (lyricsCache.has(cacheKey)) {
         return lyricsCache.get(cacheKey);
     }
 
-    console.log(`🔍 Đang tìm lời bài hát: "${cleanedTitle}" - ${artist || 'Unknown'}`);
+    console.log(`🔍 Đang tìm lời bài hát: "${cleanedTitle}" - ${cleanedArt || 'Unknown'}`);
 
     try {
         let res = await axios.get('https://lrclib.net/api/get', {
             params: {
                 track_name: cleanedTitle,
-                artist_name: (artist && !artist.toLowerCase().includes('topic') && !artist.toLowerCase().includes('music')) ? artist : undefined
+                artist_name: cleanedArt || undefined
             },
             timeout: 5000
         });
@@ -125,7 +138,7 @@ async function fetchLyrics(title, artist) {
 
         res = await axios.get('https://lrclib.net/api/search', {
             params: {
-                q: `${cleanedTitle} ${artist || ''}`.trim()
+                q: `${cleanedTitle} ${cleanedArt || ''}`.trim()
             },
             timeout: 5000
         });
@@ -161,10 +174,10 @@ async function updatePresence(force = false) {
             // --- CHẾ ĐỘ PHÁT NHẠC ---
             const track = currentTrack;
             
-            // Tính toán thời gian thực tế khớp chuẩn từng mili-giây + Bù 350ms độ trễ mạng/phản xạ
+            // Tính toán thời gian thực tế khớp chuẩn từng mili-giây + Bù 350ms
             const elapsedSincePing = (Date.now() - lastMusicUpdate) / 1000;
             const liveCurrentTime = Math.min(track.duration || 9999, (track.currentTime || 0) + elapsedSincePing);
-            const effectiveTime = liveCurrentTime + 0.35; // Bù 350ms để chữ hiện ngay khi ca sĩ mở lời
+            const effectiveTime = liveCurrentTime + 0.35;
             const duration = track.duration || 0;
 
             let activeLyric = '';
@@ -174,9 +187,7 @@ async function updatePresence(force = false) {
                     const nextLine = currentLyrics[i + 1];
                     const lineEndTime = nextLine ? nextLine.timeSec : line.timeSec + 6;
 
-                    // Kiểm tra thời gian câu hát
                     if (effectiveTime >= line.timeSec && effectiveTime < lineEndTime) {
-                        // Nếu khoảng nghỉ giữa 2 câu hát quá dài (> 5s), sau khi hát xong 4.5s sẽ tắt lời để nhường cho nhạc dạo
                         if (effectiveTime - line.timeSec <= 5.5) {
                             activeLyric = line.text;
                         }
@@ -186,14 +197,13 @@ async function updatePresence(force = false) {
             }
 
             const platform = track.platform || 'Music';
-            const songName = track.title || 'Unknown Song';
-            const artistName = track.artist || 'Unknown Artist';
+            const songName = cleanTitle(track.title) || 'Unknown Song';
+            const artistName = cleanArtist(track.artist) || 'Artist';
 
-            // Nếu đang hát: Hiện lời bài hát. Nếu đang dạo nhạc: Chỉ hiện nghệ sĩ (không hiện chữ thừa)
+            // Nếu đang hát: Hiện lời bài hát. Nếu đang dạo nhạc: Chỉ hiện nghệ sĩ sạch (không có chữ Topic)
             const detailsText = `🎵 ${songName}`.substring(0, 127);
             const stateText = activeLyric ? `🎤 ${activeLyric}`.substring(0, 127) : `🎧 ${artistName}`.substring(0, 127);
 
-            // Kiểm tra xem trạng thái có thay đổi không (tránh spam Discord Gateway)
             const presenceKey = `MUSIC|${songName}|${stateText}`;
             if (!force && presenceKey === lastPresenceKey && (Date.now() - lastSetActivityTime < 12000)) {
                 return;
@@ -269,11 +279,11 @@ app.post('/track', async (req, res) => {
     lastMusicUpdate = Date.now();
     currentTrack = data;
 
-    const trackId = `${data.title} - ${data.artist}`;
+    const trackId = `${cleanTitle(data.title)} - ${cleanArtist(data.artist)}`;
     if (trackId !== lastTrackId) {
         lastTrackId = trackId;
         lastPresenceKey = '';
-        console.log(`\n🎵 BÀI HÁT MỚI: "${data.title}" (${data.artist || 'Unknown'}) trên ${data.platform || 'Web'}`);
+        console.log(`\n🎵 BÀI HÁT MỚI: "${data.title}" (${cleanArtist(data.artist)}) trên ${data.platform || 'Web'}`);
         currentLyrics = await fetchLyrics(data.title, data.artist);
         updatePresence(true);
     } else {
@@ -303,7 +313,6 @@ client.on('ready', async () => {
 
     updatePresence(true);
 
-    // Kiểm tra định kỳ mỗi 500ms để nhảy lời ngay lập tức khi chạm mốc thời gian
     setInterval(() => {
         updatePresence(false);
     }, 500);
