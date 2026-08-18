@@ -14,14 +14,14 @@ const CLIENT_ID = '1538974355193593856';
 // Trạng thái bài hát hiện tại
 let currentTrack = null;
 let currentLyrics = [];
-let currentArtworkKey = null;
+let currentImageKey = null;
 let lastTrackId = '';
 let lastMusicUpdate = 0;
 let lastPresenceKey = '';
 let lastSetActivityTime = 0;
 
 const lyricsCache = new Map();
-const artworkCache = new Map();
+const youtubeIdCache = new Map();
 
 // Làm sạch tên ca sĩ (loại bỏ - Topic, VEVO, Official...)
 function cleanArtist(artist) {
@@ -34,7 +34,7 @@ function cleanArtist(artist) {
         .trim();
 }
 
-// Lấy ca sĩ chính (loại bỏ các ca sĩ phụ / ft / và)
+// Lấy ca sĩ chính
 function getPrimaryArtist(artist) {
     if (!artist) return '';
     const cleaned = cleanArtist(artist);
@@ -57,6 +57,52 @@ function cleanTitle(title) {
         .replace(/-.*MV$/gi, '')
         .replace(/\s*-\s*Topic\s*/gi, '')
         .trim();
+}
+
+// Tra cứu Video ID để dùng định dạng native youtube:VIDEO_ID (100% chuẩn không bao giờ lỗi ?)
+async function resolveYouTubeId(title, artist, fallbackTrack) {
+    // 1. Nếu từ trình duyệt đã gửi videoId
+    if (fallbackTrack && fallbackTrack.videoId && typeof fallbackTrack.videoId === 'string' && fallbackTrack.videoId.length >= 5) {
+        return fallbackTrack.videoId;
+    }
+
+    // 2. Tìm trong URL
+    if (fallbackTrack && fallbackTrack.url) {
+        const ytMatch = fallbackTrack.url.match(/[?&]v=([^&#]+)/) || fallbackTrack.url.match(/youtu\.be\/([^&#]+)/);
+        if (ytMatch) return ytMatch[1];
+    }
+
+    // 3. Tìm trong link ảnh
+    if (fallbackTrack && fallbackTrack.artwork && fallbackTrack.artwork.includes('/vi/')) {
+        const viMatch = fallbackTrack.artwork.match(/\/vi\/([^\/]+)\//);
+        if (viMatch) return viMatch[1];
+    }
+
+    const cleanedTitle = cleanTitle(title);
+    const primaryArtist = getPrimaryArtist(artist);
+    const query = `${cleanedTitle} ${primaryArtist}`.trim();
+    const cacheKey = query.toLowerCase();
+
+    if (youtubeIdCache.has(cacheKey)) {
+        return youtubeIdCache.get(cacheKey);
+    }
+
+    // 4. Tra cứu tự động trên YouTube Search
+    try {
+        const url = 'https://www.youtube.com/results?search_query=' + encodeURIComponent(query);
+        const res = await axios.get(url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+            timeout: 3500
+        });
+        const match = res.data.match(/"videoId":"([^"]+)"/);
+        if (match && match[1]) {
+            youtubeIdCache.set(cacheKey, match[1]);
+            console.log(`🎬 Đã tra cứu Video ID cho "${query}": ${match[1]}`);
+            return match[1];
+        }
+    } catch (e) {}
+
+    return null;
 }
 
 // Phân tích cú pháp LRC [mm:ss.xx]
@@ -88,78 +134,7 @@ function parseLRC(lrcText) {
     return result;
 }
 
-// Tìm ảnh bìa Album HD vuông 1:1 chuẩn quốc tế (không bao giờ bị viền đen)
-async function fetchHighResArtwork(title, artist, fallbackTrack) {
-    const cleanedTitle = cleanTitle(title);
-    const primaryArtist = getPrimaryArtist(artist);
-    const cacheKey = `${cleanedTitle} - ${primaryArtist}`.toLowerCase();
-
-    if (artworkCache.has(cacheKey)) {
-        return artworkCache.get(cacheKey);
-    }
-
-    // 1. Tìm ảnh bìa HD 600x600 từ iTunes
-    try {
-        const res = await axios.get('https://itunes.apple.com/search', {
-            params: {
-                term: `${cleanedTitle} ${primaryArtist}`.trim(),
-                entity: 'song',
-                limit: 1
-            },
-            timeout: 4000
-        });
-
-        if (res.data && res.data.results && res.data.results.length > 0) {
-            const rawUrl = res.data.results[0].artworkUrl100;
-            if (rawUrl) {
-                const highResUrl = rawUrl.replace('100x100bb', '600x600bb');
-                const discordImg = `mp:${highResUrl}`;
-                artworkCache.set(cacheKey, discordImg);
-                console.log(`🖼️ Đã tìm thấy ảnh bìa Album vuông HD từ iTunes cho "${cleanedTitle}"`);
-                return discordImg;
-            }
-        }
-    } catch (e) {}
-
-    // 2. Định dạng Spotify Native
-    if (fallbackTrack && fallbackTrack.artwork && fallbackTrack.artwork.includes('scdn.co/image/')) {
-        const spotId = fallbackTrack.artwork.split('scdn.co/image/')[1].split('?')[0];
-        if (spotId) {
-            const discordImg = `spotify:${spotId}`;
-            artworkCache.set(cacheKey, discordImg);
-            return discordImg;
-        }
-    }
-
-    // 3. Định dạng YouTube Native
-    if (fallbackTrack) {
-        if (fallbackTrack.videoId) {
-            const discordImg = `youtube:${fallbackTrack.videoId}`;
-            artworkCache.set(cacheKey, discordImg);
-            return discordImg;
-        }
-        if (fallbackTrack.url) {
-            const ytMatch = fallbackTrack.url.match(/[?&]v=([^&#]+)/) || fallbackTrack.url.match(/youtu\.be\/([^&#]+)/);
-            if (ytMatch) {
-                const discordImg = `youtube:${ytMatch[1]}`;
-                artworkCache.set(cacheKey, discordImg);
-                return discordImg;
-            }
-        }
-        if (fallbackTrack.artwork && fallbackTrack.artwork.includes('/vi/')) {
-            const viMatch = fallbackTrack.artwork.match(/\/vi\/([^\/]+)\//);
-            if (viMatch) {
-                const discordImg = `youtube:${viMatch[1]}`;
-                artworkCache.set(cacheKey, discordImg);
-                return discordImg;
-            }
-        }
-    }
-
-    return null;
-}
-
-// Lấy lời bài hát từ LRCLIB (Tìm kiếm đa tầng thông minh)
+// Lấy lời bài hát từ LRCLIB (Đa tầng thông minh)
 async function fetchLyrics(title, artist) {
     const cleanedTitle = cleanTitle(title);
     const primaryArtist = getPrimaryArtist(artist);
@@ -250,7 +225,7 @@ async function updatePresence(force = false) {
         currentTrack = null;
         lastTrackId = '';
         currentLyrics = [];
-        currentArtworkKey = null;
+        currentImageKey = null;
     }
 
     try {
@@ -286,7 +261,7 @@ async function updatePresence(force = false) {
             const detailsText = `🎵 ${songName}`.substring(0, 127);
             const stateText = activeLyric ? `🎤 ${activeLyric}`.substring(0, 127) : `🎧 ${artistName}`.substring(0, 127);
 
-            const presenceKey = `MUSIC|${songName}|${stateText}|${currentArtworkKey}`;
+            const presenceKey = `MUSIC|${songName}|${stateText}|${currentImageKey}`;
             if (!force && presenceKey === lastPresenceKey && (Date.now() - lastSetActivityTime < 12000)) {
                 return;
             }
@@ -300,8 +275,8 @@ async function updatePresence(force = false) {
                 .setDetails(detailsText)
                 .setState(stateText);
 
-            if (currentArtworkKey) {
-                presence.setAssetsLargeImage(currentArtworkKey);
+            if (currentImageKey) {
+                presence.setAssetsLargeImage(currentImageKey);
                 presence.setAssetsLargeText(`${songName} - ${artistName}`.substring(0, 127));
             }
 
@@ -358,14 +333,24 @@ async function handleTrackData(data) {
         lastPresenceKey = '';
         console.log(`\n🎵 BÀI HÁT MỚI: "${data.title}" (${cleanArtist(data.artist)}) trên ${data.platform || 'Web'}`);
         
-        // Tìm song song Lời bài hát & Ảnh bìa HD
-        const [lyrics, artwork] = await Promise.all([
+        // 1. Tìm lời bài hát
+        // 2. Tra cứu Video ID chuẩn YouTube Native
+        const [lyrics, ytVideoId] = await Promise.all([
             fetchLyrics(data.title, data.artist),
-            fetchHighResArtwork(data.title, data.artist, data)
+            resolveYouTubeId(data.title, data.artist, data)
         ]);
 
         currentLyrics = lyrics;
-        currentArtworkKey = artwork;
+
+        if (ytVideoId) {
+            currentImageKey = `youtube:${ytVideoId}`;
+        } else if (data.artwork && data.artwork.includes('scdn.co/image/')) {
+            const spotId = data.artwork.split('scdn.co/image/')[1].split('?')[0];
+            currentImageKey = `spotify:${spotId}`;
+        } else {
+            currentImageKey = null;
+        }
+
         updatePresence(true);
     } else {
         updatePresence(false);
@@ -397,7 +382,7 @@ app.post('/stop', (req, res) => {
     currentTrack = null;
     lastTrackId = '';
     currentLyrics = [];
-    currentArtworkKey = null;
+    currentImageKey = null;
     updatePresence(true);
     res.json({ ok: true });
 });
@@ -406,7 +391,7 @@ app.get('/stop', (req, res) => {
     currentTrack = null;
     lastTrackId = '';
     currentLyrics = [];
-    currentArtworkKey = null;
+    currentImageKey = null;
     updatePresence(true);
     res.json({ ok: true });
 });
