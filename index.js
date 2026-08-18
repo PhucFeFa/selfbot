@@ -16,14 +16,15 @@ let currentTrack = null;
 let currentLyrics = [];
 let lastTrackId = '';
 let lastMusicUpdate = 0;
-let lastRenderedLyric = '';
+let lastPresenceKey = '';
+let lastSetActivityTime = 0;
 const lyricsCache = new Map();
 
 // Chuyển đổi định dạng ảnh phù hợp cho Discord
 function formatDiscordImage(track) {
     if (!track) return null;
     
-    // 1. Nếu là YouTube: dùng chuẩn native youtube:VIDEO_ID (Discord tự render ảnh bìa HD không bao giờ lỗi)
+    // 1. YouTube: dùng native youtube:VIDEO_ID (ảnh nét căng, không bao giờ lỗi)
     if (track.videoId) {
         return `youtube:${track.videoId}`;
     }
@@ -32,13 +33,13 @@ function formatDiscordImage(track) {
         if (ytMatch) return `youtube:${ytMatch[1]}`;
     }
 
-    // 2. Nếu là Spotify: dùng chuẩn native spotify:IMAGE_ID
+    // 2. Spotify: dùng native spotify:IMAGE_ID
     if (track.artwork && track.artwork.includes('scdn.co/image/')) {
         const spotId = track.artwork.split('scdn.co/image/')[1];
         if (spotId) return `spotify:${spotId}`;
     }
 
-    // 3. Fallback cho các link ảnh khác
+    // 3. Fallback khác
     if (track.artwork) {
         if (track.artwork.startsWith('mp:') || track.artwork.startsWith('youtube:') || track.artwork.startsWith('spotify:')) {
             return track.artwork;
@@ -110,7 +111,7 @@ async function fetchLyrics(title, artist) {
         let res = await axios.get('https://lrclib.net/api/get', {
             params: {
                 track_name: cleanedTitle,
-                artist_name: (artist && !artist.toLowerCase().includes('topic')) ? artist : undefined
+                artist_name: (artist && !artist.toLowerCase().includes('topic') && !artist.toLowerCase().includes('music')) ? artist : undefined
             },
             timeout: 5000
         });
@@ -118,7 +119,7 @@ async function fetchLyrics(title, artist) {
         if (res.data && res.data.syncedLyrics) {
             const parsed = parseLRC(res.data.syncedLyrics);
             lyricsCache.set(cacheKey, parsed);
-            console.log(`✨ Đã tìm thấy lời bài hát khớp thời gian (${parsed.length} câu)`);
+            console.log(`✨ Đã tìm thấy lời bài hát (${parsed.length} câu)`);
             return parsed;
         }
 
@@ -150,7 +151,7 @@ const client = new Client({ checkUpdate: false });
 const startTime = Date.now();
 
 // Cập nhật trạng thái Rich Presence lên Discord
-async function updatePresence() {
+async function updatePresence(force = false) {
     if (!client.user) return;
 
     const isMusicActive = currentTrack && !currentTrack.paused && (Date.now() - lastMusicUpdate < 20000);
@@ -160,27 +161,27 @@ async function updatePresence() {
             // --- CHẾ ĐỘ PHÁT NHẠC ---
             const track = currentTrack;
             
-            // Tính toán thời gian thực tế khớp chuẩn từng mili-giây
+            // Tính toán thời gian thực tế khớp chuẩn từng mili-giây + Bù 350ms độ trễ mạng/phản xạ
             const elapsedSincePing = (Date.now() - lastMusicUpdate) / 1000;
             const liveCurrentTime = Math.min(track.duration || 9999, (track.currentTime || 0) + elapsedSincePing);
+            const effectiveTime = liveCurrentTime + 0.35; // Bù 350ms để chữ hiện ngay khi ca sĩ mở lời
             const duration = track.duration || 0;
 
-            let currentLyricLine = '';
+            let activeLyric = '';
             if (currentLyrics && currentLyrics.length > 0) {
-                // Lọc câu hát gần nhất với liveCurrentTime
-                let activeLine = null;
                 for (let i = 0; i < currentLyrics.length; i++) {
-                    if (currentLyrics[i].timeSec <= liveCurrentTime) {
-                        activeLine = currentLyrics[i];
-                    } else {
+                    const line = currentLyrics[i];
+                    const nextLine = currentLyrics[i + 1];
+                    const lineEndTime = nextLine ? nextLine.timeSec : line.timeSec + 6;
+
+                    // Kiểm tra thời gian câu hát
+                    if (effectiveTime >= line.timeSec && effectiveTime < lineEndTime) {
+                        // Nếu khoảng nghỉ giữa 2 câu hát quá dài (> 5s), sau khi hát xong 4.5s sẽ tắt lời để nhường cho nhạc dạo
+                        if (effectiveTime - line.timeSec <= 5.5) {
+                            activeLyric = line.text;
+                        }
                         break;
                     }
-                }
-
-                if (activeLine) {
-                    currentLyricLine = activeLine.text;
-                } else {
-                    currentLyricLine = '🎵 [Nhạc dạo đầu...]';
                 }
             }
 
@@ -188,12 +189,24 @@ async function updatePresence() {
             const songName = track.title || 'Unknown Song';
             const artistName = track.artist || 'Unknown Artist';
 
+            // Nếu đang hát: Hiện lời bài hát. Nếu đang dạo nhạc: Chỉ hiện nghệ sĩ (không hiện chữ thừa)
+            const detailsText = `🎵 ${songName}`.substring(0, 127);
+            const stateText = activeLyric ? `🎤 ${activeLyric}`.substring(0, 127) : `🎧 ${artistName}`.substring(0, 127);
+
+            // Kiểm tra xem trạng thái có thay đổi không (tránh spam Discord Gateway)
+            const presenceKey = `MUSIC|${songName}|${stateText}`;
+            if (!force && presenceKey === lastPresenceKey && (Date.now() - lastSetActivityTime < 12000)) {
+                return;
+            }
+            lastPresenceKey = presenceKey;
+            lastSetActivityTime = Date.now();
+
             const presence = new RichPresence(client)
                 .setApplicationId(CLIENT_ID)
                 .setType('PLAYING')
                 .setName('PhucLam')
-                .setDetails(`🎵 ${songName}`.substring(0, 127))
-                .setState(currentLyricLine ? `🎤 ${currentLyricLine}`.substring(0, 127) : `👤 ${artistName}`.substring(0, 127));
+                .setDetails(detailsText)
+                .setState(stateText);
 
             const imageKey = formatDiscordImage(track);
             if (imageKey) {
@@ -213,14 +226,19 @@ async function updatePresence() {
 
             await client.user.setActivity(presence);
 
-            if (currentLyricLine && currentLyricLine !== lastRenderedLyric) {
-                lastRenderedLyric = currentLyricLine;
-                console.log(`[${Math.floor(liveCurrentTime)}s] 🎤 ${currentLyricLine}`);
+            if (activeLyric) {
+                console.log(`[${Math.floor(liveCurrentTime)}s] 🎤 ${activeLyric}`);
             }
 
         } else {
             // --- CHẾ ĐỘ MẶC ĐỊNH (Không nghe nhạc) ---
-            lastRenderedLyric = '';
+            const presenceKey = 'DEFAULT';
+            if (!force && presenceKey === lastPresenceKey && (Date.now() - lastSetActivityTime < 20000)) {
+                return;
+            }
+            lastPresenceKey = presenceKey;
+            lastSetActivityTime = Date.now();
+
             const presence = new RichPresence(client)
                 .setApplicationId(CLIENT_ID)
                 .setType('PLAYING')
@@ -254,12 +272,14 @@ app.post('/track', async (req, res) => {
     const trackId = `${data.title} - ${data.artist}`;
     if (trackId !== lastTrackId) {
         lastTrackId = trackId;
-        lastRenderedLyric = '';
+        lastPresenceKey = '';
         console.log(`\n🎵 BÀI HÁT MỚI: "${data.title}" (${data.artist || 'Unknown'}) trên ${data.platform || 'Web'}`);
         currentLyrics = await fetchLyrics(data.title, data.artist);
+        updatePresence(true);
+    } else {
+        updatePresence(false);
     }
 
-    updatePresence();
     res.json({ ok: true });
 });
 
@@ -267,7 +287,7 @@ app.post('/stop', (req, res) => {
     currentTrack = null;
     lastTrackId = '';
     currentLyrics = [];
-    updatePresence();
+    updatePresence(true);
     res.json({ ok: true });
 });
 
@@ -281,12 +301,12 @@ client.on('ready', async () => {
     console.log('🤖 Đang kích hoạt chế độ Rich Presence 24/7 + Music & Lyrics...');
     console.log('======================================================\n');
 
-    updatePresence();
+    updatePresence(true);
 
-    // Đồng bộ mỗi 1.0 giây để bám sát lời bài hát từng tích tắc
+    // Kiểm tra định kỳ mỗi 500ms để nhảy lời ngay lập tức khi chạm mốc thời gian
     setInterval(() => {
-        updatePresence();
-    }, 1000);
+        updatePresence(false);
+    }, 500);
 });
 
 const token = process.env.DISCORD_TOKEN;
