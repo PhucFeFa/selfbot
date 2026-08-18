@@ -53,7 +53,6 @@ function cleanTitle(title) {
 function formatDiscordImage(track) {
     if (!track) return null;
 
-    // 1. Nếu có ảnh bìa vuông từ Spotify / Apple Music / Google / SoundCloud: dùng trực tiếp qua proxy mp:
     if (track.artwork && typeof track.artwork === 'string') {
         if (track.artwork.includes('scdn.co/image/')) {
             const spotId = track.artwork.split('scdn.co/image/')[1];
@@ -64,7 +63,6 @@ function formatDiscordImage(track) {
         }
     }
 
-    // 2. Nếu là YouTube: dùng native youtube:VIDEO_ID
     if (track.videoId) {
         return `youtube:${track.videoId}`;
     }
@@ -73,7 +71,6 @@ function formatDiscordImage(track) {
         if (ytMatch) return `youtube:${ytMatch[1]}`;
     }
 
-    // 3. Fallback khác
     if (track.artwork) {
         if (track.artwork.startsWith('mp:') || track.artwork.startsWith('youtube:') || track.artwork.startsWith('spotify:')) {
             return track.artwork;
@@ -172,7 +169,14 @@ const startTime = Date.now();
 async function updatePresence(force = false) {
     if (!client.user) return;
 
-    const isMusicActive = currentTrack && !currentTrack.paused && (Date.now() - lastMusicUpdate < 20000);
+    // Nếu quá 6 giây không nhận được gói tin nhạc (hoặc đã pause) -> Coi như đã tắt nhạc
+    const isMusicActive = currentTrack && !currentTrack.paused && (Date.now() - lastMusicUpdate < 6000);
+
+    if (!isMusicActive && currentTrack) {
+        currentTrack = null;
+        lastTrackId = '';
+        currentLyrics = [];
+    }
 
     try {
         if (isMusicActive) {
@@ -239,12 +243,8 @@ async function updatePresence(force = false) {
 
             await client.user.setActivity(presence);
 
-            if (activeLyric) {
-                console.log(`[${Math.floor(liveCurrentTime)}s] 🎤 ${activeLyric}`);
-            }
-
         } else {
-            // --- CHẾ ĐỘ MẶC ĐỊNH (Không nghe nhạc) ---
+            // --- CHẾ ĐỘ MẶC ĐỊNH (Khi đã dừng/tắt nhạc) ---
             const presenceKey = 'DEFAULT';
             if (!force && presenceKey === lastPresenceKey && (Date.now() - lastSetActivityTime < 20000)) {
                 return;
@@ -262,6 +262,7 @@ async function updatePresence(force = false) {
                 .addButton('snvv', 'https://www.instagram.com/lhphucclh?igsh=dHc4dmlqd2tseGE1&igsi=dHc4dmlqd2tseGE1&utm_source=qr');
 
             await client.user.setActivity(presence);
+            console.log('🔄 Đã tự động quay về trạng thái mặc định (Gender: Male)');
         }
     } catch (err) {
         console.error('❌ Lỗi updatePresence:', err.message);
@@ -275,8 +276,10 @@ app.get('/', (req, res) => {
 
 app.post('/track', async (req, res) => {
     const data = req.body;
-    if (!data || !data.title) {
-        return res.json({ ok: false });
+    if (!data || !data.title || data.paused) {
+        currentTrack = null;
+        updatePresence(true);
+        return res.json({ ok: true, reset: true });
     }
 
     lastMusicUpdate = Date.now();
@@ -301,6 +304,7 @@ app.post('/stop', (req, res) => {
     lastTrackId = '';
     currentLyrics = [];
     updatePresence(true);
+    console.log('🛑 Đã nhận lệnh dừng nhạc từ trình duyệt');
     res.json({ ok: true });
 });
 
