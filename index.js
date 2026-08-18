@@ -235,6 +235,8 @@ async function updatePresence(force = false) {
             const duration = track.duration || 0;
 
             let activeLyric = '';
+            let nextLyric = '';
+
             if (currentLyrics && currentLyrics.length > 0) {
                 for (let i = 0; i < currentLyrics.length; i++) {
                     const line = currentLyrics[i];
@@ -244,6 +246,7 @@ async function updatePresence(force = false) {
                     if (effectiveTime >= line.timeSec && effectiveTime < lineEndTime) {
                         if (effectiveTime - line.timeSec <= 5.5) {
                             activeLyric = line.text;
+                            if (nextLine) nextLyric = nextLine.text;
                         }
                         break;
                     }
@@ -254,10 +257,16 @@ async function updatePresence(force = false) {
             const songName = cleanTitle(track.title) || 'Unknown Song';
             const artistName = cleanArtist(track.artist) || 'Artist';
 
+            // Dòng 1: Tên bài hát (Duy nhất 1 lần, không bị trùng)
             const detailsText = `🎵 ${songName}`.substring(0, 127);
+            
+            // Dòng 2: Lời bài hát hiện tại (hoặc Nghệ sĩ nếu đang dạo nhạc)
             const stateText = activeLyric ? `🎤 ${activeLyric}`.substring(0, 127) : `🎧 ${artistName}`.substring(0, 127);
 
-            const presenceKey = `MUSIC|${songName}|${stateText}|${currentImageKey}`;
+            // Dòng 3 (Large Image Text / Tooltip): Câu hát kế tiếp hoặc Ca sĩ (KHÔNG lặp lại tên bài hát)
+            const largeImageText = nextLyric ? `⏭️ ${nextLyric}` : `🎧 ${artistName}`;
+
+            const presenceKey = `MUSIC|${songName}|${stateText}|${currentImageKey}|${largeImageText}`;
             if (!force && presenceKey === lastPresenceKey && (Date.now() - lastSetActivityTime < 12000)) {
                 return;
             }
@@ -273,7 +282,7 @@ async function updatePresence(force = false) {
 
             if (currentImageKey) {
                 presence.setAssetsLargeImage(currentImageKey);
-                presence.setAssetsLargeText(`${songName} - ${artistName}`.substring(0, 127));
+                presence.setAssetsLargeText(largeImageText.substring(0, 127));
             }
 
             if (duration > 0 && liveCurrentTime >= 0) {
