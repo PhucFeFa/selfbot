@@ -19,6 +19,7 @@ let lastTrackId = '';
 let lastMusicUpdate = 0;
 let lastPresenceKey = '';
 let lastSetActivityTime = 0;
+let loginError = null;
 
 let storageChannel = null;
 const lyricsCache = new Map();
@@ -390,6 +391,7 @@ app.get('/', (req, res) => {
 
 // Endpoint kiểm tra trạng thái hoạt động thực tế của Discord Selfbot
 app.get('/bot-status', (req, res) => {
+    const rawToken = process.env.DISCORD_TOKEN || '';
     res.json({
         server: 'online',
         discordReady: !!client.user,
@@ -400,7 +402,12 @@ app.get('/bot-status', (req, res) => {
         activities: client.user ? client.user.presence?.activities : [],
         currentTrack: currentTrack,
         lastMusicUpdate: lastMusicUpdate ? new Date(lastMusicUpdate).toISOString() : null,
-        storageChannelReady: !!storageChannel
+        storageChannelReady: !!storageChannel,
+        loginError: loginError,
+        tokenConfigured: !!rawToken,
+        tokenPrefix: rawToken ? rawToken.substring(0, 10) + '...' : null,
+        tokenSuffix: rawToken ? '...' + rawToken.slice(-6) : null,
+        tokenLength: rawToken ? rawToken.length : 0
     });
 });
 
@@ -445,6 +452,7 @@ client.on('ready', async () => {
     console.log(`🎉 ĐÃ ĐĂNG NHẬP THÀNH CÔNG: ${client.user.tag}`);
     console.log('🤖 Đang kích hoạt chế độ Rich Presence 24/7 (LISTENING)...');
     console.log('======================================================\n');
+    loginError = null;
 
     await initStorageChannel(client);
     updatePresence(true);
@@ -456,10 +464,11 @@ client.on('ready', async () => {
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
+    loginError = 'NO_TOKEN_CONFIGURED';
     console.error('❌ LỖI: Chưa cấu hình DISCORD_TOKEN trong file .env');
-    process.exit(1);
+} else {
+    client.login(token).catch((err) => {
+        loginError = err.message;
+        console.error('❌ Lỗi khi đăng nhập Discord:', err.message);
+    });
 }
-
-client.login(token).catch((err) => {
-    console.error('❌ Lỗi khi đăng nhập Discord:', err.message);
-});
