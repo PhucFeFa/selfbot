@@ -388,6 +388,22 @@ app.get('/', (req, res) => {
     res.send('✅ Discord 24/7 Music & Synced Lyrics Selfbot is RUNNING!');
 });
 
+// Endpoint kiểm tra trạng thái hoạt động thực tế của Discord Selfbot
+app.get('/bot-status', (req, res) => {
+    res.json({
+        server: 'online',
+        discordReady: !!client.user,
+        userTag: client.user ? client.user.tag : null,
+        userId: client.user ? client.user.id : null,
+        status: client.user ? client.user.presence?.status : null,
+        activitiesCount: client.user ? (client.user.presence?.activities?.length || 0) : 0,
+        activities: client.user ? client.user.presence?.activities : [],
+        currentTrack: currentTrack,
+        lastMusicUpdate: lastMusicUpdate ? new Date(lastMusicUpdate).toISOString() : null,
+        storageChannelReady: !!storageChannel
+    });
+});
+
 app.post('/track', async (req, res) => {
     const result = await handleTrackData(req.body);
     res.json(result);
