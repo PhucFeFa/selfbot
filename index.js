@@ -404,8 +404,32 @@ app.get('/', (req, res) => {
 });
 
 // Endpoint kiểm tra trạng thái hoạt động thực tế của Discord Selfbot
-app.get('/bot-status', (req, res) => {
+app.get('/bot-status', async (req, res) => {
     const rawToken = process.env.DISCORD_TOKEN || '';
+    const cleanToken = rawToken.trim().replace(/^['"]|['"]$/g, '');
+
+    // Kiểm tra trực tiếp với Discord API
+    let discordApiCheck = null;
+    if (cleanToken) {
+        try {
+            const apiRes = await axios.get('https://discord.com/api/v9/users/@me', {
+                headers: { Authorization: cleanToken },
+                timeout: 3000
+            });
+            discordApiCheck = {
+                valid: true,
+                username: apiRes.data.username,
+                id: apiRes.data.id
+            };
+        } catch (e) {
+            discordApiCheck = {
+                valid: false,
+                status: e.response ? e.response.status : null,
+                error: e.response ? e.response.data : e.message
+            };
+        }
+    }
+
     res.json({
         server: 'online',
         discordReady: !!client.user,
@@ -421,9 +445,10 @@ app.get('/bot-status', (req, res) => {
         loginError: loginError,
         lastWsError: lastWsError,
         tokenConfigured: !!rawToken,
-        tokenPrefix: rawToken ? rawToken.substring(0, 10) + '...' : null,
-        tokenSuffix: rawToken ? '...' + rawToken.slice(-6) : null,
-        tokenLength: rawToken ? rawToken.length : 0
+        tokenPrefix: cleanToken ? cleanToken.substring(0, 10) + '...' : null,
+        tokenSuffix: cleanToken ? '...' + cleanToken.slice(-6) : null,
+        tokenLength: cleanToken ? cleanToken.length : 0,
+        discordApiCheck: discordApiCheck
     });
 });
 
