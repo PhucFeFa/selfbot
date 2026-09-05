@@ -19,8 +19,9 @@ let lastTrackId = '';
 let lastMusicUpdate = 0;
 let lastPresenceKey = '';
 let lastSetActivityTime = 0;
-let loginError = null;
 
+let loginError = null;
+let lastWsError = null;
 let storageChannel = null;
 const lyricsCache = new Map();
 const cdnImageCache = new Map();
@@ -217,6 +218,19 @@ async function fetchLyrics(title, artist) {
 const client = new Client({ checkUpdate: false });
 const startTime = Date.now();
 
+client.on('error', err => {
+    lastWsError = 'client_error: ' + err.message;
+    console.error('Client Error:', err);
+});
+client.on('shardError', err => {
+    lastWsError = 'shard_error: ' + err.message;
+    console.error('Shard Error:', err);
+});
+client.on('warn', warn => {
+    lastWsError = 'warn: ' + warn;
+    console.warn('Warn:', warn);
+});
+
 // Cập nhật trạng thái Rich Presence lên Discord
 async function updatePresence(force = false) {
     if (!client.user) return;
@@ -398,12 +412,14 @@ app.get('/bot-status', (req, res) => {
         userTag: client.user ? client.user.tag : null,
         userId: client.user ? client.user.id : null,
         status: client.user ? client.user.presence?.status : null,
+        wsStatus: client.ws ? client.ws.status : -1,
         activitiesCount: client.user ? (client.user.presence?.activities?.length || 0) : 0,
         activities: client.user ? client.user.presence?.activities : [],
         currentTrack: currentTrack,
         lastMusicUpdate: lastMusicUpdate ? new Date(lastMusicUpdate).toISOString() : null,
         storageChannelReady: !!storageChannel,
         loginError: loginError,
+        lastWsError: lastWsError,
         tokenConfigured: !!rawToken,
         tokenPrefix: rawToken ? rawToken.substring(0, 10) + '...' : null,
         tokenSuffix: rawToken ? '...' + rawToken.slice(-6) : null,
@@ -454,7 +470,10 @@ client.on('ready', async () => {
     console.log('======================================================\n');
     loginError = null;
 
-    await initStorageChannel(client);
+    try {
+        await initStorageChannel(client);
+    } catch (e) {}
+
     updatePresence(true);
 
     setInterval(() => {
@@ -462,12 +481,14 @@ client.on('ready', async () => {
     }, 500);
 });
 
-const token = process.env.DISCORD_TOKEN;
-if (!token) {
+const rawToken = process.env.DISCORD_TOKEN;
+if (!rawToken) {
     loginError = 'NO_TOKEN_CONFIGURED';
     console.error('❌ LỖI: Chưa cấu hình DISCORD_TOKEN trong file .env');
 } else {
-    client.login(token).catch((err) => {
+    const cleanToken = rawToken.trim().replace(/^['"]|['"]$/g, '');
+    console.log(`🔑 Đang đăng nhập Discord với Token length: ${cleanToken.length}`);
+    client.login(cleanToken).catch((err) => {
         loginError = err.message;
         console.error('❌ Lỗi khi đăng nhập Discord:', err.message);
     });
