@@ -20,6 +20,7 @@ let lastMusicUpdate = 0;
 let lastPresenceKey = '';
 let lastSetActivityTime = 0;
 
+let isLoggingIn = false;
 let loginError = null;
 let lastWsError = null;
 let storageChannel = null;
@@ -341,6 +342,9 @@ async function updatePresence(force = false) {
 }
 
 async function handleTrackData(data) {
+    // Tự động kích hoạt đăng nhập nếu chưa sẵn sàng
+    ensureDiscordLogin();
+
     if (!data || !data.title || data.paused) {
         currentTrack = null;
         updatePresence(true);
@@ -398,15 +402,61 @@ async function handleTrackData(data) {
     return { ok: true };
 }
 
+// Hàm đảm bảo tự động đăng nhập và phục hồi kết nối 24/7 (Watchdog)
+async function ensureDiscordLogin() {
+    if (client.user && client.ws && client.ws.status === 0) {
+        return;
+    }
+    if (isLoggingIn) return;
+
+    const rawToken = process.env.DISCORD_TOKEN;
+    if (!rawToken) {
+        loginError = 'NO_TOKEN_CONFIGURED';
+        return;
+    }
+
+    const cleanToken = rawToken.trim().replace(/^['"]|['"]$/g, '');
+    isLoggingIn = true;
+    console.log(`🔄 [Auto-Login] Đang đăng nhập Discord với Token length ${cleanToken.length}...`);
+
+    try {
+        await client.login(cleanToken);
+        loginError = null;
+        console.log(`🎉 [Auto-Login] Đăng nhập thành công: ${client.user?.tag}`);
+    } catch (err) {
+        loginError = err.message;
+        console.error('❌ [Auto-Login] Lỗi khi đăng nhập Discord:', err.message);
+    } finally {
+        isLoggingIn = false;
+    }
+}
+
 // Router nhận dữ liệu nhạc từ trình duyệt (Hỗ trợ cả POST và GET)
 app.get('/', (req, res) => {
-    res.send('✅ Discord 24/7 Music & Synced Lyrics Selfbot is RUNNING!');
+    ensureDiscordLogin();
+    res.send('✅ Discord 24/7 Music & Synced Lyrics Selfbot is RUNNING on Alwaysdata!');
+});
+
+// Endpoint kích hoạt kết nối lại thủ công
+app.get('/reconnect', async (req, res) => {
+    await ensureDiscordLogin();
+    res.json({
+        ok: !!client.user,
+        userTag: client.user ? client.user.tag : null,
+        wsStatus: client.ws ? client.ws.status : -1,
+        loginError: loginError
+    });
 });
 
 // Endpoint kiểm tra trạng thái hoạt động thực tế của Discord Selfbot
 app.get('/bot-status', async (req, res) => {
     const rawToken = process.env.DISCORD_TOKEN || '';
     const cleanToken = rawToken.trim().replace(/^['"]|['"]$/g, '');
+
+    // Nếu bot chưa ready, tự động thử kết nối ngay trong background
+    if (!client.user) {
+        ensureDiscordLogin();
+    }
 
     // Kiểm tra trực tiếp với Discord API
     let discordApiCheck = null;
@@ -506,15 +556,11 @@ client.on('ready', async () => {
     }, 500);
 });
 
-const rawToken = process.env.DISCORD_TOKEN;
-if (!rawToken) {
-    loginError = 'NO_TOKEN_CONFIGURED';
-    console.error('❌ LỖI: Chưa cấu hình DISCORD_TOKEN trong file .env');
-} else {
-    const cleanToken = rawToken.trim().replace(/^['"]|['"]$/g, '');
-    console.log(`🔑 Đang đăng nhập Discord với Token length: ${cleanToken.length}`);
-    client.login(cleanToken).catch((err) => {
-        loginError = err.message;
-        console.error('❌ Lỗi khi đăng nhập Discord:', err.message);
-    });
-}
+// Khởi chạy đăng nhập và cơ chế giám sát tự phục hồi kết nối 24/7
+ensureDiscordLogin();
+
+setInterval(() => {
+    if (!client.user || (client.ws && client.ws.status !== 0 && client.ws.status !== 1)) {
+        ensureDiscordLogin();
+    }
+}, 8000);
