@@ -10,6 +10,7 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 const CLIENT_ID = '1538974355193593856';
+const APP_URL = process.env.APP_URL || 'https://lamphuc3112.alwaysdata.net';
 
 // Trạng thái bài hát hiện tại
 let currentTrack = null;
@@ -232,6 +233,20 @@ client.on('warn', warn => {
     console.warn('Warn:', warn);
 });
 
+// 🔥 BẢO VỆ ĐA THIẾT BỊ: Khi tài khoản online lại trên PC/Phone và ghi đè trạng thái
+client.on('presenceUpdate', (oldPresence, newPresence) => {
+    if (newPresence && newPresence.userId === client.user?.id) {
+        const activities = newPresence.activities || [];
+        const hasOurActivity = activities.some(a => a.name === 'PhucLam' || a.applicationId === CLIENT_ID);
+
+        // Nếu phát hiện thiết bị khác (Desktop/Mobile) vừa ghi đè làm mất hoạt động -> khôi phục tức thì!
+        if (!hasOurActivity) {
+            console.log('⚡ [Presence-Sync] Phát hiện phiên thiết bị khác vừa ghi đè -> Khôi phục Rich Presence ngay lập tức!');
+            updatePresence(true);
+        }
+    }
+});
+
 // Cập nhật trạng thái Rich Presence lên Discord
 async function updatePresence(force = false) {
     if (!client.user) return;
@@ -286,7 +301,7 @@ async function updatePresence(force = false) {
             const largeImageText = activeLyric ? `🎤 ${activeLyric}` : `✨ ${platform}`;
 
             const presenceKey = `MUSIC|${songName}|${stateText}|${currentImageKey}|${largeImageText}`;
-            if (!force && presenceKey === lastPresenceKey && (Date.now() - lastSetActivityTime < 12000)) {
+            if (!force && presenceKey === lastPresenceKey && (Date.now() - lastSetActivityTime < 10000)) {
                 return;
             }
             lastPresenceKey = presenceKey;
@@ -319,7 +334,7 @@ async function updatePresence(force = false) {
         } else {
             // --- CHẾ ĐỘ MẶC ĐỊNH (Đang nghe PhucLam - Gender: Male) ---
             const presenceKey = 'DEFAULT_LISTENING';
-            if (!force && presenceKey === lastPresenceKey && (Date.now() - lastSetActivityTime < 20000)) {
+            if (!force && presenceKey === lastPresenceKey && (Date.now() - lastSetActivityTime < 15000)) {
                 return;
             }
             lastPresenceKey = presenceKey;
@@ -556,11 +571,22 @@ client.on('ready', async () => {
     }, 500);
 });
 
-// Khởi chạy đăng nhập và cơ chế giám sát tự phục hồi kết nối 24/7
+// Khởi chạy đăng nhập ban đầu
 ensureDiscordLogin();
 
+// Cơ chế giám sát tự phục hồi kết nối Gateway liên tục mỗi 8s
 setInterval(() => {
     if (!client.user || (client.ws && client.ws.status !== 0 && client.ws.status !== 1)) {
         ensureDiscordLogin();
     }
 }, 8000);
+
+// 🔥 GIỮ MÁY CHỦ ALWAYSDATA KHÔNG BAO GIỜ BỊ NGỦ IDLE (Ping mỗi 3 phút)
+setInterval(async () => {
+    try {
+        await axios.get(`${APP_URL}/bot-status`, { timeout: 8000 });
+        console.log('💓 [Keep-Alive Ping] Đã gửi ping giữ tiến trình Alwaysdata chạy liên tục 24/7');
+    } catch (e) {
+        // bỏ qua lỗi nếu có
+    }
+}, 3 * 60 * 1000);
